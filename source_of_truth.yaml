@@ -1,0 +1,524 @@
+version: 1
+
+paths:
+  steps_dir_name: "steps"
+  evidence_filename_template: "{step_key}.evidence.txt"
+  sources_filename_template: "{step_key}.sources.txt"
+  profile_snapshot_template: "{step_key}.profile.json"
+  profile_raw_template: "{step_key}.profile.raw.txt"
+  final_profile_filename: "repo-profile.json"
+  workspace_filename: "workspace.dsl"
+  architecture_md_filename: "ARCHITECTURE.md"
+  file_catalog_filename: "file-catalog.jsonl"
+  routes_profile_filename: "routes.jsonl"
+  mermaid_filename: "workspace.mermaid.md"
+
+sources:
+  include_file_size: true
+  include_mtime: false
+  format: "tsv"
+
+scan:
+  ignore_dirs:
+    - ".git"
+    - ".hg"
+    - ".svn"
+    - "node_modules"
+    - "dist"
+    - "build"
+    - "out"
+    - "target"
+    - "vendor"
+    - "coverage"
+    - ".next"
+    - ".turbo"
+    - ".cache"
+    - ".idea"
+    - ".vscode"
+    - "bin"
+    - "obj"
+    - ".gradle"
+    - ".mvn"
+    - ".venv"
+    - "venv"
+  ignore_exts:
+    - ".class"
+    - ".jar"
+    - ".war"
+    - ".ear"
+    - ".o"
+    - ".a"
+    - ".so"
+    - ".dylib"
+    - ".dll"
+    - ".exe"
+    - ".bin"
+    - ".zip"
+    - ".tar"
+    - ".gz"
+    - ".7z"
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+    - ".webp"
+    - ".gif"
+    - ".ico"
+    - ".pdf"
+    - ".woff"
+    - ".woff2"
+    - ".ttf"
+    - ".eot"
+    - ".mp4"
+    - ".mov"
+    - ".mkv"
+    - ".mp3"
+    - ".wav"
+    - ".dmg"
+    - ".iso"
+  text_ext_allowlist:
+    - ".go"
+    - ".mod"
+    - ".sum"
+    - ".js"
+    - ".ts"
+    - ".tsx"
+    - ".jsx"
+    - ".java"
+    - ".kt"
+    - ".kts"
+    - ".py"
+    - ".rb"
+    - ".php"
+    - ".rs"
+    - ".c"
+    - ".h"
+    - ".cpp"
+    - ".hpp"
+    - ".cs"
+    - ".yaml"
+    - ".yml"
+    - ".json"
+    - ".toml"
+    - ".ini"
+    - ".cfg"
+    - ".conf"
+    - ".properties"
+    - ".proto"
+    - ".md"
+    - ".txt"
+    - ".sql"
+    - ".graphql"
+    - ".gql"
+    - ".xml"
+    - ".gradle"
+    - ".sh"
+    - ".bash"
+    - ".zsh"
+    - ".tf"
+    - ".hcl"
+    - ".env"
+    - ".dsl"
+    - ".html"
+    - ".csv"
+    - ".example"
+    - ".sample"
+    - ".config"
+    - ".dist"
+    - ".dev"
+    - ".stg"
+    - ".prd"
+    - ".cmd"
+    - ".bat"
+    - ".ps1"
+    - ".puml"
+  special_text_filename_patterns:
+    - "Dockerfile*"
+    - "Makefile*"
+    - "Jenkinsfile*"
+    - "Taskfile.*"
+    - "mvnw"
+    - "mvnw.cmd"
+    - "gradlew"
+    - "gradlew.bat"
+    - "README*"
+    - "LICENSE*"
+    - "CHANGELOG*"
+    - "NOTICE*"
+    - ".env*"
+
+steps:
+  - key: "01_docs_infra"
+    title: "Docs + Infra"
+    globs:
+      - "README*"
+      - "docs/**"
+      - "doc/**"
+      - "architecture/**"
+      - "adr/**"
+      - "ADRs/**"
+      - "Dockerfile*"
+      - "docker-compose*.yml"
+      - "docker-compose*.yaml"
+      - "k8s/**"
+      - "kubernetes/**"
+      - "deploy/**"
+      - "deployment/**"
+      - "manifests/**"
+      - "helm/**"
+      - "charts/**"
+      - ".github/workflows/**"
+      - "Jenkinsfile*"
+      - ".gitlab-ci.yml"
+      - ".gitlab-ci.yaml"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+    path_keywords:
+      - "docker"
+      - "k8s"
+      - "kubernetes"
+      - "helm"
+      - "charts"
+      - ".github/workflows"
+      - "jenkins"
+      - "gitlab-ci"
+      - "circleci"
+      - "azure-pipelines"
+    snippet_regexes: []
+    max_files: 250
+  - key: "02_build_deps"
+    title: "Build + Dependencies"
+    globs:
+      - "go.mod"
+      - "go.work"
+      - "go.sum"
+      - "go.work.sum"
+      - "pom.xml"
+      - "build.gradle"
+      - "build.gradle.kts"
+      - "settings.gradle"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - "package.json"
+      - "package-lock.json"
+      - "pnpm-lock.yaml"
+      - "yarn.lock"
+      - "bun.lockb"
+      - "tsconfig*.json"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "poetry.lock"
+      - "Pipfile"
+      - "Pipfile.lock"
+      - "Gemfile"
+      - "Gemfile.lock"
+      - "composer.json"
+      - "composer.lock"
+      - "Makefile"
+      - "Taskfile.yml"
+      - "Taskfile.yaml"
+      - "mvnw"
+      - "mvnw.cmd"
+      - "gradlew"
+      - "gradlew.bat"
+      - "proto/**"
+      - "**/*.proto"
+      - "**/openapi*.yml"
+      - "**/openapi*.yaml"
+      - "**/swagger*.yml"
+      - "**/swagger*.yaml"
+      - "**/asyncapi*.yml"
+      - "**/asyncapi*.yaml"
+      - "**/*.gradle"
+      - "**/*.gradle.kts"
+    path_keywords:
+      - "openapi"
+      - "swagger"
+      - "asyncapi"
+      - "proto"
+      - "gradle"
+      - "maven"
+    snippet_regexes: []
+    max_files: 220
+  - key: "03_entrypoints"
+    title: "Entrypoints / Bootstrap"
+    globs:
+      - "**/main.go"
+      - "**/cmd/**/main.go"
+      - "**/app.py"
+      - "**/main.py"
+      - "**/manage.py"
+      - "**/index.ts"
+      - "**/index.js"
+      - "**/server.ts"
+      - "**/server.js"
+      - "**/app.ts"
+      - "**/app.js"
+      - "**/*Application.java"
+      - "**/*Main.java"
+      - "**/*Application.kt"
+      - "**/*Main.kt"
+      - "**/main.kt"
+    path_keywords:
+      - "cmd/"
+      - "src/"
+      - "server/"
+      - "app/"
+      - "internal/"
+      - "api/"
+    snippet_regexes:
+      - '\bfunc\s+main\s*\('
+      - '\bListenAndServe\b'
+      - '\bgrpc\.NewServer\b|\bNewServer\b'
+      - '\bSpringApplication\.run\b'
+      - '@SpringBootApplication'
+      - '\bexpress\s*\('
+      - '\bFastify\s*\('
+    max_files: 220
+  - key: "04_routing_api"
+    title: "Routing / API Surface"
+    globs:
+      - "**/*router*.*"
+      - "**/*route*.*"
+      - "**/*routes*.*"
+      - "**/*handler*.*"
+      - "**/*controller*.*"
+      - "**/*resource*.*"
+      - "**/*endpoint*.*"
+    path_keywords:
+      - "router"
+      - "route"
+      - "controller"
+      - "handler"
+      - "endpoint"
+      - "resource"
+    snippet_regexes:
+      - '\bHandleFunc\b|\bHandle\b'
+      - '\bchi\.NewRouter\b|\br\.Route\b|\br\.Get\b|\br\.Post\b'
+      - '\bgin\.\w+\b|\brouter\.\w+\b'
+      - '\becho\.\w+\b|\be\.\w+\('
+      - '\bapp\.(get|post|put|delete|patch)\b'
+      - '\brouter\.(get|post|put|delete|patch)\b'
+      - '@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b'
+      - '@RestController\b'
+      - '@Controller\b'
+      - '\bRegister\w+Server\b'
+    max_files: 280
+  - key: "05_deps_datastores"
+    title: "Datastores + Outbound Dependencies"
+    globs:
+      - "**/*config*.*"
+      - "**/*client*.*"
+      - "**/*repository*.*"
+      - "**/*dao*.*"
+      - "**/*storage*.*"
+      - "**/*db*.*"
+      - "**/*producer*.*"
+      - "**/*consumer*.*"
+      - "**/*listener*.*"
+    path_keywords:
+      - "redis"
+      - "postgres"
+      - "mysql"
+      - "kafka"
+      - "amqp"
+      - "grpc"
+      - "http"
+      - "db"
+      - "sql"
+      - "mongo"
+      - "elastic"
+      - "rabbit"
+      - "nats"
+      - "sqs"
+      - "sns"
+      - "consumer"
+      - "producer"
+      - "listener"
+      - "queue"
+      - "topic"
+    snippet_regexes:
+      - '\bsql\.Open\b|\bpgx\b|\bgorm\b|\bHibernate\b|\bJPA\b|\bEntityManager\b'
+      - '\bredis\.\w+\b|\bNewClient\b|\bledis\b'
+      - '\bkafka\b|\bsarama\b|\bAMQP\b|\brabbit\b|\bNATS\b'
+      - '\belasticsearch\b|\bOpenSearch\b'
+      - '\bhttp\.NewRequest\b|\bRestTemplate\b|\bWebClient\b|\bOkHttp\b'
+      - '\bgrpc\.\w+\b|\bDial\b|\bNewClient\b'
+      - '\bDSN\b|\bJDBC\b|\bpostgres(ql)?://|\bmysql://|\bmongodb://'
+      - '@KafkaListener\b'
+      - '@RabbitListener\b'
+      - '@JmsListener\b'
+      - '@SqsListener\b'
+      - '\bKafkaTemplate\b|\bRabbitTemplate\b|\bJmsTemplate\b'
+    max_files: 320
+  - key: "06_configs"
+    title: "Config files / Env templates"
+    globs:
+      - "**/*.yml"
+      - "**/*.yaml"
+      - "**/*.toml"
+      - "**/*.properties"
+      - "**/*.conf"
+      - "**/*.ini"
+      - "**/*.env"
+      - "**/*.env.*"
+      - "**/*.example"
+      - "**/*.sample"
+      - "**/*.xml"
+      - "**/*.config"
+    path_keywords:
+      - "config"
+      - "settings"
+      - "application.yml"
+      - "values.yaml"
+    snippet_regexes:
+      - '\bport\b\s*[:=]'
+      - '\bhost\b\s*[:=]'
+      - '\burl\b\s*[:=]'
+      - '\bredis\b|\bpostgres\b|\bmysql\b|\bkafka\b|\bamqp\b|\bnats\b|\belasticsearch\b'
+    max_files: 260
+
+prompts:
+  profile_init_system: |
+    You analyze a software repository using ONLY the provided evidence text.
+    Do not invent. If evidence is missing, use "unknown" and add an item in open_questions with what file(s) would confirm it.
+    Return STRICT JSON only. No markdown, no commentary.
+
+    Schema:
+    {
+      "repo": {"name": string, "path": string},
+      "primary_language": string,
+      "build_and_runtime": {"build_tools": [string], "runtime": [string]},
+      "entrypoints": [string],
+      "apis": [{"type": "http"|"grpc"|"events"|"cli"|"unknown", "details": string}],
+      "data_stores": [{"type": string, "details": string}],
+      "dependencies_outbound": [{"target": string, "reason": string}],
+      "containers": [
+        {"name": string,
+         "type": "service"|"worker"|"library"|"frontend"|"job"|"unknown",
+         "tech": string,
+         "responsibility": string,
+         "exposes": [string],
+         "depends_on": [string]}
+      ],
+      "open_questions": [string]
+    }
+
+    Rules:
+    - Put evidence references in details/reason fields as file paths (e.g., "Dockerfile", "k8s/deployment.yaml", "cmd/api/main.go").
+    - Prefer conservative outputs; unknown is acceptable.
+  profile_update_system: |
+    You update an existing repo architecture profile using ONLY the provided NEW_EVIDENCE.
+    Do not invent. If NEW_EVIDENCE contradicts existing fields, update them and add a short note into open_questions.
+
+    Return STRICT JSON only. No markdown, no commentary.
+
+    You will receive:
+    - CURRENT_PROFILE_JSON
+    - NEW_EVIDENCE (file excerpts with file path headers)
+
+    Update rules:
+    - Keep current values unless you have evidence to add/replace.
+    - De-duplicate list items.
+    - For any new detail added, cite evidence as a file path in details/reason/responsibility fields.
+    - If unsure, keep as "unknown" and add an open_questions entry naming which file to inspect.
+  structurizr_system: |
+    Generate a Structurizr DSL workspace (C4 Context + Container) from the given repo profile JSON.
+    Use only what is in the JSON; do not add invented dependencies.
+    Output ONLY DSL text, no markdown.
+
+    Requirements:
+    - One workspace.
+    - One softwareSystem for this repo.
+    - One person "User" if any container exposes APIs (http/grpc).
+    - Add containers from repo_profile.containers.
+    - Add relationships using depends_on and dependencies_outbound.
+    - For unknowns, omit rather than guess.
+  json_repair_system: |
+    You are a strict JSON repair tool.
+    Convert the INPUT_TEXT into a single valid JSON object matching the schema below.
+
+    Rules:
+    - Output JSON only (no markdown, no code fences, no commentary).
+    - Remove trailing commas and comments.
+    - If the input seems incomplete, produce best-effort JSON; add an explanation into open_questions.
+
+    Schema:
+    {
+      "repo": {"name": string, "path": string},
+      "primary_language": string,
+      "build_and_runtime": {"build_tools": [string], "runtime": [string]},
+      "entrypoints": [string],
+      "apis": [{"type": "http"|"grpc"|"events"|"cli"|"unknown", "details": string}],
+      "data_stores": [{"type": string, "details": string}],
+      "dependencies_outbound": [{"target": string, "reason": string}],
+      "containers": [
+        {"name": string,
+         "type": "service"|"worker"|"library"|"frontend"|"job"|"unknown",
+         "tech": string,
+         "responsibility": string,
+         "exposes": [string],
+         "depends_on": [string]}
+      ],
+      "open_questions": [string]
+    }
+  file_classify_system: |
+    You classify a single repository file into analysis step categories.
+    Return STRICT JSON only. No markdown, no commentary.
+
+    Schema:
+    {
+      "categories": [string],
+      "summary": string
+    }
+
+    Rules:
+    - Use only step keys listed in AVAILABLE_STEPS.
+    - Choose zero or more categories if the file matches multiple steps.
+    - Keep summary under 200 characters.
+  file_classify_repair_system: |
+    You are a strict JSON repair tool for file classification.
+    Convert INPUT_TEXT into a single valid JSON object matching the schema below.
+
+    Output JSON only. No markdown, no commentary.
+
+    Schema:
+    {
+      "categories": [string],
+      "summary": string
+    }
+
+    Rules:
+    - Use only step keys listed in AVAILABLE_STEPS.
+  mermaid_c4_system: |
+    You generate a Mermaid C4 markdown document from the given repo profile.
+    Use only REPO_PROFILE_JSON and optional ROUTES_PROFILE. Do not invent systems or dependencies.
+
+    Output Markdown only (no extra commentary). Structure:
+    # <repo-name> - C4 Architecture
+    ## Context
+    ```mermaid
+    C4Context
+    ...
+    ```
+    ## Container
+    ```mermaid
+    C4Container
+    ...
+    ```
+    ## Component
+    ```mermaid
+    C4Component
+    ...
+    ```
+    ## Code
+    ```mermaid
+    flowchart LR
+    ...
+    ```
+
+    Rules:
+    - Use stable, lowercase identifiers with underscores.
+    - Do not use DeploymentNode in C4Context/C4Container/C4Component (DeploymentNode is only valid for C4Deployment).
+    - In C4Container and C4Component, use Container_Boundary/System_Boundary to group elements.
+    - Avoid curly braces in flowchart labels; replace route params like "{id}" with ":id".
+    - If evidence is insufficient for Component or Code, include the section with a short note and omit the diagram.
