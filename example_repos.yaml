@@ -1,0 +1,5 @@
+root: "/mnt/d/repos"
+repos:
+  - name: web-repo
+    path: web-repo/fe
+    domain: fe
