@@ -96,6 +96,11 @@ def _load_catalog(path: Path) -> Dict[str, dict]:
     return out
 
 
+def load_file_catalog(path: Path) -> Dict[str, dict]:
+    """Public helper to load a JSONL file catalog."""
+    return _load_catalog(path)
+
+
 def _write_catalog(path: Path, entries: Iterable[dict]) -> None:
     """Write catalog entries as JSONL, sorted by path."""
     path.parent.mkdir(parents=True, exist_ok=True)

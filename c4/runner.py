@@ -12,7 +12,7 @@ from typing import Optional
 import yaml
 
 from .config import get_paths_config, get_sources_config
-from .file_catalog import build_file_catalog
+from .file_catalog import build_file_catalog, load_file_catalog
 from .json_tools import parse_or_repair_json
 from .mermaid import generate_mermaid_c4
 from .ollama_client import ollama_chat
@@ -141,9 +141,8 @@ def main() -> int:
         all_files = list_repo_files(repo_path)
 
         file_catalog = None
+        catalog_path = repo_out / catalog_name
         if args.classify_files:
-            catalog_path = repo_out / catalog_name
-
             file_catalog = build_file_catalog(
                 repo_path,
                 all_files,
@@ -159,6 +158,10 @@ def main() -> int:
                 llm_log=llm_log,
                 verbose=args.verbose,
             )
+        elif catalog_path.exists():
+            file_catalog = load_file_catalog(catalog_path)
+            if args.verbose:
+                _repo_log(f"[CLASSIFY] reuse existing catalog={catalog_path}")
 
         routes_text = ""
         routes_text_mermaid = ""
