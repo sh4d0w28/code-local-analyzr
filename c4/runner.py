@@ -30,6 +30,47 @@ from .routes import build_routes_profile, format_routes_text
 from .steps import STEPS
 
 
+def _estimate_prompt_budget_bytes(
+    num_ctx: int,
+    num_predict: int,
+    reserve_tokens: int,
+    bytes_per_token: float,
+) -> int:
+    """Estimate prompt byte budget from context settings."""
+    if bytes_per_token <= 0:
+        return 0
+    usable_tokens = num_ctx - num_predict - reserve_tokens
+    if usable_tokens <= 0:
+        return 0
+    return max(0, int(usable_tokens * bytes_per_token))
+
+
+def _evidence_budget_bytes(
+    *,
+    system_text: str,
+    user_prefix: str,
+    prompt_budget_bytes: int,
+    hard_cap: int,
+) -> int:
+    """Compute evidence byte budget after accounting for prompt overhead."""
+    system_bytes = len(system_text.encode("utf-8", errors="ignore"))
+    prefix_bytes = len(user_prefix.encode("utf-8", errors="ignore"))
+    available = prompt_budget_bytes - system_bytes - prefix_bytes
+    if available < 0:
+        available = 0
+    return min(available, hard_cap)
+
+
+def _truncate_text_bytes(text: str, max_bytes: int) -> str:
+    """Trim text to a byte length, preserving UTF-8 safety."""
+    if max_bytes <= 0:
+        return ""
+    raw = text.encode("utf-8", errors="ignore")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore")
+
+
 def main() -> int:
     """Run the CLI and orchestrate per-repo analysis."""
     ap = argparse.ArgumentParser(description="Iterative C4 generator using local Ollama (step-by-step evidence)")
@@ -37,23 +78,74 @@ def main() -> int:
     ap.add_argument("--out", default="architecture-out", help="Output directory")
     ap.add_argument("--ollama", default="http://localhost:11434", help="Ollama base URL")
     ap.add_argument("--model", default=os.environ.get("MODEL", "deepseek-coder-v2:latest"), help="Ollama model name")
-    ap.add_argument("--timeout", type=int, default=1200, help="HTTP timeout seconds")
-    ap.add_argument("--num-ctx", type=int, default=32768, help="Context window tokens for requests")
-    ap.add_argument("--num-predict", type=int, default=4096, help="Max tokens to generate per request")
-    ap.add_argument("--max-step-bytes", type=int, default=1_800_000, help="Max evidence bytes per step")
-    ap.add_argument("--max-file-bytes", type=int, default=220_000, help="Max bytes per single file excerpt")
+    ap.add_argument(
+        "--classify-files-model",
+        default=os.environ.get("CLASSIFY_FILES_MODEL", "qwen2.5-coder:7b-instruct"),
+        help="Ollama model name for file classification",
+    )
+    ap.add_argument("--timeout", type=int, default=7200, help="HTTP timeout seconds")
+    ap.add_argument("--num-ctx", type=int, default=163840, help="Context window tokens for requests")
+    ap.add_argument("--num-predict", type=int, default=32768, help="Max tokens to generate per request")
+    ap.add_argument(
+        "--respect-num-ctx",
+        dest="respect_num_ctx",
+        action="store_true",
+        default=True,
+        help="Scale evidence and classification payloads to stay within num_ctx (default: on)",
+    )
+    ap.add_argument(
+        "--no-respect-num-ctx",
+        dest="respect_num_ctx",
+        action="store_false",
+        help="Disable num_ctx-based prompt budgeting",
+    )
+    ap.add_argument(
+        "--ctx-bytes-per-token",
+        type=float,
+        default=4.0,
+        help="Estimated bytes per token for num_ctx budgeting",
+    )
+    ap.add_argument(
+        "--ctx-reserve-tokens",
+        type=int,
+        default=512,
+        help="Extra tokens reserved as headroom in addition to num_predict",
+    )
+    ap.add_argument("--max-step-bytes", type=int, default=6_000_000, help="Max evidence bytes per step")
+    ap.add_argument("--max-file-bytes", type=int, default=800_000, help="Max bytes per single file excerpt")
     ap.add_argument("--max-snippets-per-file", type=int, default=14, help="Max snippet hits per file when using regex mode")
     ap.add_argument("--snippet-context-lines", type=int, default=14, help="Context lines around regex hit")
-    ap.add_argument("--max-files-per-step", type=int, default=260, help="Hard cap of files per step (in addition to step.max_files)")
+    ap.add_argument(
+        "--chunk-large-files",
+        action="store_true",
+        help="Split large files into sequential chunks (size = --max-file-bytes) for evidence",
+    )
+    ap.add_argument("--max-files-per-step", type=int, default=800, help="Hard cap of files per step (in addition to step.max_files)")
     ap.add_argument("--classify-files", action="store_true", help="Classify all text files with LLM and use catalog for step selection")
-    ap.add_argument("--classify-max-file-bytes", type=int, default=120_000, help="Max bytes sent to classifier per file")
+    ap.add_argument("--classify-max-file-bytes", type=int, default=200_000, help="Max bytes sent to classifier per file")
     ap.add_argument("--routes-profile", dest="routes_profile", action="store_true", default=True, help="Extract routes and include them in routing analysis (default: on)")
     ap.add_argument("--no-routes-profile", dest="routes_profile", action="store_false", help="Disable route extraction")
-    ap.add_argument("--routes-max-file-bytes", type=int, default=120_000, help="Max bytes per file when extracting routes")
+    ap.add_argument("--routes-max-file-bytes", type=int, default=200_000, help="Max bytes per file when extracting routes")
     ap.add_argument("--mermaid", action="store_true", help="Generate Mermaid C4 markdown alongside Structurizr DSL")
     ap.add_argument("--verbose", action="store_true", help="Log per-file selection and analysis details")
     ap.add_argument("--skip-aggregate", action="store_true", help="Skip building a merged workspace DSL across repos")
     args = ap.parse_args()
+
+    prompt_budget_bytes = None
+    if args.respect_num_ctx:
+        prompt_budget_bytes = _estimate_prompt_budget_bytes(
+            args.num_ctx,
+            args.num_predict,
+            args.ctx_reserve_tokens,
+            args.ctx_bytes_per_token,
+        )
+        if prompt_budget_bytes <= 0:
+            print(
+                "[WARN] num_ctx too small for num_predict + ctx_reserve_tokens; "
+                "ctx budgeting disabled.",
+                file=sys.stderr,
+            )
+            prompt_budget_bytes = None
 
     catalog_path = Path(args.catalog).expanduser().resolve()
     if not catalog_path.exists():
@@ -149,11 +241,12 @@ def main() -> int:
                 STEPS,
                 out_path=catalog_path,
                 ollama_base=args.ollama,
-                model=args.model,
+                model=args.classify_files_model,
                 timeout_s=args.timeout,
                 num_predict=args.num_predict,
                 num_ctx=args.num_ctx,
                 max_file_bytes=args.classify_max_file_bytes,
+                prompt_budget_bytes=prompt_budget_bytes,
                 log=_repo_log,
                 llm_log=llm_log,
                 verbose=args.verbose,
@@ -211,18 +304,70 @@ def main() -> int:
 
                 log = _log
 
+            current_profile_json = None
+            if profile is None:
+                system_prompt = PROFILE_INIT_SYSTEM
+                user_prefix = (
+                    f"repo.name={repo_name}\n"
+                    f"repo.path={repo_path}\n\n"
+                    "EVIDENCE:\n"
+                )
+            else:
+                current_profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
+                system_prompt = PROFILE_UPDATE_SYSTEM
+                user_prefix = (
+                    "CURRENT_PROFILE_JSON:\n"
+                    + current_profile_json
+                    + "\n\nNEW_EVIDENCE:\n"
+                )
+
+            max_step_bytes = args.max_step_bytes
+            max_file_bytes = args.max_file_bytes
+            if prompt_budget_bytes is not None:
+                max_step_bytes = _evidence_budget_bytes(
+                    system_text=system_prompt,
+                    user_prefix=user_prefix,
+                    prompt_budget_bytes=prompt_budget_bytes,
+                    hard_cap=args.max_step_bytes,
+                )
+                if args.verbose and max_step_bytes < args.max_step_bytes:
+                    _repo_log(f"[CTX] {step.key} evidence_budget={max_step_bytes} bytes")
+
+            routes_blob = ""
+            max_step_bytes_for_files = max_step_bytes
+            if routes_text and step.key == "04_routing_api":
+                routes_blob = "\n\n" + routes_text
+                if prompt_budget_bytes is not None:
+                    routes_blob_bytes = len(routes_blob.encode("utf-8", errors="ignore"))
+                    if routes_blob_bytes > max_step_bytes:
+                        marker = "\n[ROUTES_TRUNCATED]\n"
+                        marker_bytes = len(marker.encode("utf-8", errors="ignore"))
+                        overhead_bytes = len("\n\n".encode("utf-8"))
+                        allowed = max_step_bytes - overhead_bytes - marker_bytes
+                        if allowed <= 0:
+                            routes_blob = _truncate_text_bytes(marker, max_step_bytes)
+                        else:
+                            trimmed = _truncate_text_bytes(routes_text, allowed)
+                            routes_blob = "\n\n" + trimmed + marker
+                        routes_blob_bytes = len(routes_blob.encode("utf-8", errors="ignore"))
+                    max_step_bytes_for_files = max(0, max_step_bytes - routes_blob_bytes)
+
+            if prompt_budget_bytes is not None:
+                max_file_bytes = min(max_file_bytes, max_step_bytes_for_files)
+
             evidence = build_step_evidence(
                 repo_path,
                 step_files,
                 step,
-                max_step_bytes=args.max_step_bytes,
-                max_file_bytes=args.max_file_bytes,
+                max_step_bytes=max_step_bytes_for_files,
+                max_file_bytes=max_file_bytes,
                 max_snippets_per_file=args.max_snippets_per_file,
                 snippet_context_lines=args.snippet_context_lines,
+                chunk_large_files=args.chunk_large_files,
                 log=log,
             )
-            if routes_text and step.key == "04_routing_api":
-                evidence = evidence + "\n\n" + routes_text
+            if routes_blob:
+                evidence = evidence + routes_blob
 
             sources = build_step_sources(
                 repo_path,
@@ -240,14 +385,10 @@ def main() -> int:
 
             if profile is None:
                 print(f"[{repo_name}] [LLM INIT] {step.key}")
-                user = (
-                    f"repo.name={repo_name}\n"
-                    f"repo.path={repo_path}\n\n"
-                    f"EVIDENCE:\n{evidence}"
-                )
+                user = user_prefix + evidence
                 raw = ollama_chat(
                     args.ollama, args.model,
-                    PROFILE_INIT_SYSTEM,
+                    system_prompt,
                     user,
                     temperature=0.0,
                     timeout_s=args.timeout,
@@ -274,15 +415,17 @@ def main() -> int:
                 _normalize_profile(profile, repo_name, repo_path)
             else:
                 print(f"[{repo_name}] [LLM UPDATE] {step.key}")
-                user = (
-                    "CURRENT_PROFILE_JSON:\n"
-                    + json.dumps(profile, indent=2, ensure_ascii=False)
-                    + "\n\nNEW_EVIDENCE:\n"
-                    + evidence
-                )
+                if current_profile_json is None:
+                    current_profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
+                    user_prefix = (
+                        "CURRENT_PROFILE_JSON:\n"
+                        + current_profile_json
+                        + "\n\nNEW_EVIDENCE:\n"
+                    )
+                user = user_prefix + evidence
                 raw = ollama_chat(
                     args.ollama, args.model,
-                    PROFILE_UPDATE_SYSTEM,
+                    system_prompt,
                     user,
                     temperature=0.0,
                     timeout_s=args.timeout,

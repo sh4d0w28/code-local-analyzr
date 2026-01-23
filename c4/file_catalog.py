@@ -187,6 +187,7 @@ def build_file_catalog(
     num_predict: int,
     num_ctx: int,
     max_file_bytes: int,
+    prompt_budget_bytes: Optional[int] = None,
     log: Optional[Callable[[str], None]] = None,
     llm_log: Optional[Callable[[str], None]] = None,
     verbose: bool = False,
@@ -196,6 +197,9 @@ def build_file_catalog(
         raise RuntimeError('Missing "file_classify_system" prompt in config')
     allowed_categories = {s.key for s in steps}
     available_steps_text = _format_steps(steps)
+    system_bytes = 0
+    if prompt_budget_bytes is not None:
+        system_bytes = len(FILE_CLASSIFY_SYSTEM.encode("utf-8", errors="ignore"))
     cached = _load_catalog(out_path)
     entries: List[dict] = []
     by_path: Dict[str, dict] = {}
@@ -254,17 +258,27 @@ def build_file_catalog(
             _log_progress()
             continue
 
-        content = read_file_head_tail_limited(p, max_bytes=max_file_bytes)
-        content = redact(content)
-        user = (
+        header = (
             f"REPO: {repo.name}\n"
             f"PATH: {repo}\n"
             f"FILE: {rp}\n\n"
             "AVAILABLE_STEPS:\n"
             f"{available_steps_text}\n\n"
             "FILE_CONTENT:\n"
-            f"{content}"
         )
+        effective_max_file_bytes = max_file_bytes
+        if prompt_budget_bytes is not None:
+            header_bytes = len(header.encode("utf-8", errors="ignore"))
+            available_bytes = prompt_budget_bytes - system_bytes - header_bytes
+            if available_bytes < 0:
+                available_bytes = 0
+            if available_bytes < effective_max_file_bytes and log and verbose:
+                log(f"[CLASSIFY] ctx_budget clamp {rp} bytes={available_bytes}")
+            effective_max_file_bytes = min(effective_max_file_bytes, available_bytes)
+
+        content = read_file_head_tail_limited(p, max_bytes=effective_max_file_bytes)
+        content = redact(content)
+        user = header + content
         raw = ollama_chat(
             ollama_base, model,
             FILE_CLASSIFY_SYSTEM,

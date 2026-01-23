@@ -142,6 +142,41 @@ def read_file_head_tail(
     return "\n".join(head) + "\n\n[...TRUNCATED...]\n\n" + "\n".join(tail)
 
 
+def iter_file_chunks(p: Path, *, chunk_bytes: int) -> Iterable[tuple[str, int, int]]:
+    """Yield file chunks as text along with byte offsets (start, end)."""
+    if chunk_bytes <= 0:
+        return
+    try:
+        with p.open("rb") as f:
+            remainder = b""
+            offset = 0
+            while True:
+                data = f.read(chunk_bytes)
+                if not data:
+                    if remainder:
+                        chunk = remainder
+                        start = offset
+                        end = offset + len(chunk)
+                        yield chunk.decode("utf-8", errors="ignore"), start, end
+                    break
+                buf = remainder + data
+                cut = buf.rfind(b"\n")
+                if cut == -1:
+                    chunk = buf
+                    remainder = b""
+                else:
+                    chunk = buf[: cut + 1]
+                    remainder = buf[cut + 1 :]
+                if not chunk:
+                    continue
+                start = offset
+                end = offset + len(chunk)
+                yield chunk.decode("utf-8", errors="ignore"), start, end
+                offset = end
+    except Exception:
+        return
+
+
 def extract_snippets(
     p: Path,
     *,
@@ -241,6 +276,7 @@ def build_step_evidence(
     max_file_bytes: int,
     max_snippets_per_file: int,
     snippet_context_lines: int,
+    chunk_large_files: bool = False,
     log: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Build the evidence blob for a single step."""
@@ -254,7 +290,9 @@ def build_step_evidence(
         f"STEP: {step.key} - {step.title}",
         "-----",
     ]
-    parts.append("\n".join(header))
+    header_text = "\n".join(header)
+    parts.append(header_text)
+    total = len(header_text.encode("utf-8", errors="ignore"))
 
     for p in files:
         rp = relposix(repo, p)
@@ -269,8 +307,58 @@ def build_step_evidence(
                     context_lines=snippet_context_lines,
                     max_bytes=max_file_bytes,
                 )
-            else:
-                content = read_file_head_tail(p, max_bytes=max_file_bytes)
+                content = redact(content)
+                chunk = f"\n===== FILE: {rp} =====\n{content}\n"
+                b = chunk.encode("utf-8", errors="ignore")
+                if total + len(b) > max_step_bytes:
+                    if log is not None:
+                        log(f"[LIMIT] {step.key} {rp} step_bytes_cap={max_step_bytes}")
+                    parts.append("\n[STEP_EVIDENCE_LIMIT_REACHED]\n")
+                    break
+
+                parts.append(chunk)
+                total += len(b)
+                continue
+
+            use_chunks = False
+            file_size = None
+            if chunk_large_files:
+                try:
+                    file_size = p.stat().st_size
+                except Exception:
+                    file_size = None
+                if file_size is not None and file_size > max_file_bytes:
+                    use_chunks = True
+
+            if use_chunks:
+                est_total = None
+                if file_size is not None and max_file_bytes > 0:
+                    est_total = max(1, (file_size + max_file_bytes - 1) // max_file_bytes)
+                chunk_index = 0
+                for chunk_text, start, end in iter_file_chunks(p, chunk_bytes=max_file_bytes):
+                    chunk_index += 1
+                    if log is not None:
+                        est_label = est_total if est_total is not None else "?"
+                        log(
+                            f"[CHUNK] {step.key} {rp} part={chunk_index}/{est_label} bytes={start}-{end}"
+                        )
+                    content = redact(chunk_text)
+                    chunk_label = f"{rp} (chunk {chunk_index}"
+                    if est_total is not None:
+                        chunk_label += f"/{est_total}"
+                    chunk_label += f", bytes {start}-{end})"
+                    chunk = f"\n===== FILE: {chunk_label} =====\n{content}\n"
+                    b = chunk.encode("utf-8", errors="ignore")
+                    if total + len(b) > max_step_bytes:
+                        if log is not None:
+                            log(f"[LIMIT] {step.key} {rp} step_bytes_cap={max_step_bytes}")
+                        parts.append("\n[STEP_EVIDENCE_LIMIT_REACHED]\n")
+                        return "\n".join(parts)
+                    parts.append(chunk)
+                    total += len(b)
+                continue
+
+            content = read_file_head_tail(p, max_bytes=max_file_bytes)
         except Exception as e:
             if log is not None:
                 log(f"[SKIP] {step.key} {rp} read_error={type(e).__name__}")
