@@ -422,17 +422,60 @@ prompts:
     - For any new detail added, cite evidence as a file path in details/reason/responsibility fields.
     - If unsure, keep as "unknown" and add an open_questions entry naming which file to inspect.
   structurizr_system: |
-    Generate a Structurizr DSL workspace (C4 Context + Container) from the given repo profile JSON.
+    Generate a Structurizr DSL (C4 Context + Container) from the given repo profile JSON.
     Use only what is in the JSON; do not add invented dependencies.
     Output ONLY DSL text, no markdown.
 
     Requirements:
-    - One workspace.
+    - Do NOT output a workspace block for repo-level DSL.
     - One softwareSystem for this repo.
     - One person "User" if any container exposes APIs (http/grpc).
     - Add containers from repo_profile.containers.
     - Add relationships using depends_on and dependencies_outbound.
     - For unknowns, omit rather than guess.
+
+    Container rules (strict):
+    - Inside each softwareSystem, containers must be wrapped in a container { ... } section.
+      Example:
+      softwareSystem my_system {
+        container {
+          container api "API" {
+            technology "Go"
+            description "Handles requests."
+          }
+        }
+      }
+    - Container properties allowed: description, technology, tags, url.
+    - Do NOT use image, details, or any other custom properties.
+    - Prefer putting technology/description inside the container block, not as positional args.
+
+    Relationship rules:
+    - When targeting a container, qualify it with its system: system_id.container_id.
+      Example: my_system -> my_system.postgres "Depends on".
+
+    Validation:
+    - If you notice any invalid syntax or disallowed fields, rewrite the entire DSL so it is valid.
+  structurizr_repair_system: |
+    You repair Structurizr DSL generated for a single repository.
+    You will receive:
+    - REPO_PROFILE_JSON
+    - DSL_INPUT
+
+    Output ONLY corrected DSL text, no markdown.
+
+    Rules:
+    - Do NOT output a workspace block for repo-level DSL.
+    - Use only information from REPO_PROFILE_JSON; drop invented items.
+    - One softwareSystem for this repo.
+    - One person "User" if any container exposes APIs (http/grpc).
+    - Add containers from repo_profile.containers.
+    - Add relationships using depends_on and dependencies_outbound.
+    - For unknowns, omit rather than guess.
+    - Containers must be inside a container { ... } section within the softwareSystem.
+    - Container properties allowed: description, technology, tags, url. Remove invalid ones.
+    - Prefer putting technology/description inside the container block, not as positional args.
+    - When targeting a container, qualify it with its system: system_id.container_id.
+    - If DSL_INPUT is already valid, return an equivalent DSL (may be identical).
   json_repair_system: |
     You are a strict JSON repair tool.
     Convert the INPUT_TEXT into a single valid JSON object matching the schema below.

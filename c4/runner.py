@@ -17,7 +17,12 @@ from .json_tools import parse_or_repair_json
 from .mermaid import generate_mermaid_c4
 from .ollama_client import ollama_chat
 from .output import write_arch_md
-from .prompts import PROFILE_INIT_SYSTEM, PROFILE_UPDATE_SYSTEM, STRUCTURIZR_SYSTEM
+from .prompts import (
+    PROFILE_INIT_SYSTEM,
+    PROFILE_UPDATE_SYSTEM,
+    STRUCTURIZR_REPAIR_SYSTEM,
+    STRUCTURIZR_SYSTEM,
+)
 from .repo_scan import (
     build_step_evidence,
     build_step_sources,
@@ -475,6 +480,27 @@ def main() -> int:
             log=llm_log,
             label="structurizr",
         )
+        if STRUCTURIZR_REPAIR_SYSTEM:
+            print(f"[{repo_name}] [LLM] Repair Structurizr DSL")
+            dsl_repair_user = (
+                "REPO_PROFILE_JSON:\n"
+                + json.dumps(profile, indent=2, ensure_ascii=False)
+                + "\n\nDSL_INPUT:\n"
+                + dsl
+            )
+            repaired = ollama_chat(
+                args.ollama, args.model,
+                STRUCTURIZR_REPAIR_SYSTEM,
+                dsl_repair_user,
+                temperature=0.0,
+                timeout_s=args.timeout,
+                num_predict=args.num_predict,
+                num_ctx=args.num_ctx,
+                log=llm_log,
+                label="structurizr_repair",
+            )
+            if repaired and repaired.strip():
+                dsl = repaired
         dsl_path.write_text(dsl, encoding="utf-8")
 
         write_arch_md(md_path, profile)

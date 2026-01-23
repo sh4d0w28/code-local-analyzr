@@ -7,6 +7,7 @@ _PROMPTS = get_prompts()
 PROFILE_INIT_SYSTEM = _PROMPTS["profile_init_system"]
 PROFILE_UPDATE_SYSTEM = _PROMPTS["profile_update_system"]
 STRUCTURIZR_SYSTEM = _PROMPTS["structurizr_system"]
+STRUCTURIZR_REPAIR_SYSTEM = _PROMPTS.get("structurizr_repair_system")
 JSON_REPAIR_SYSTEM = _PROMPTS["json_repair_system"]
 FILE_CLASSIFY_SYSTEM = _PROMPTS.get("file_classify_system")
 FILE_CLASSIFY_REPAIR_SYSTEM = _PROMPTS.get("file_classify_repair_system")
