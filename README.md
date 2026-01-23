@@ -231,6 +231,7 @@ All flags (from `python run_local_c4.py --help`):
 - `--verbose`: Log file selection, progress, and prompt sizes (default: off).
 - `--skip-aggregate`: Skip merged workspace generation (default: off).
 - `--render-only`: Generate `workspace.dsl` and optional Mermaid output from existing `repo-profile.json` without re-analyzing repositories.
+- `--dsl-programmatic`: Render `*.dsl` from `repo-profile.json` without using the LLM.
 
 Notes:
 - Set `MODEL` env var to override the default model without passing `--model`.

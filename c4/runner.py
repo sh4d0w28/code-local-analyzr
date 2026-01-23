@@ -14,6 +14,7 @@ import yaml
 from .config import get_paths_config, get_sources_config
 from .file_catalog import build_file_catalog, load_file_catalog
 from .json_tools import parse_or_repair_json
+from .dsl_render import render_structurizr
 from .mermaid import generate_mermaid_c4
 from .ollama_client import ollama_chat
 from .output import write_arch_md
@@ -139,6 +140,11 @@ def main() -> int:
         "--render-only",
         action="store_true",
         help="Generate DSL/mermaid from existing repo-profile.json without re-analyzing repositories",
+    )
+    ap.add_argument(
+        "--dsl-programmatic",
+        action="store_true",
+        help="Render Structurizr DSL from repo profiles without using the LLM",
     )
     args = ap.parse_args()
 
@@ -521,40 +527,44 @@ def main() -> int:
             print(f"[{repo_name}] [ERROR] No profile available for rendering.", file=sys.stderr)
             continue
 
-        print(f"[{repo_name}] [LLM] Generate Structurizr DSL")
-        dsl_user = "REPO_PROFILE_JSON:\n" + json.dumps(profile, indent=2, ensure_ascii=False)
-        dsl = ollama_chat(
-            args.ollama, args.model,
-            STRUCTURIZR_SYSTEM,
-            dsl_user,
-            temperature=0.0,
-            timeout_s=args.timeout,
-            num_predict=args.num_predict,
-            num_ctx=args.num_ctx,
-            log=llm_log,
-            label="structurizr",
-        )
-        if STRUCTURIZR_REPAIR_SYSTEM:
-            print(f"[{repo_name}] [LLM] Repair Structurizr DSL")
-            dsl_repair_user = (
-                "REPO_PROFILE_JSON:\n"
-                + json.dumps(profile, indent=2, ensure_ascii=False)
-                + "\n\nDSL_INPUT:\n"
-                + dsl
-            )
-            repaired = ollama_chat(
+        if args.dsl_programmatic:
+            print(f"[{repo_name}] [DSL] Programmatic render")
+            dsl = render_structurizr(profile)
+        else:
+            print(f"[{repo_name}] [LLM] Generate Structurizr DSL")
+            dsl_user = "REPO_PROFILE_JSON:\n" + json.dumps(profile, indent=2, ensure_ascii=False)
+            dsl = ollama_chat(
                 args.ollama, args.model,
-                STRUCTURIZR_REPAIR_SYSTEM,
-                dsl_repair_user,
+                STRUCTURIZR_SYSTEM,
+                dsl_user,
                 temperature=0.0,
                 timeout_s=args.timeout,
                 num_predict=args.num_predict,
                 num_ctx=args.num_ctx,
                 log=llm_log,
-                label="structurizr_repair",
+                label="structurizr",
             )
-            if repaired and repaired.strip():
-                dsl = repaired
+            if STRUCTURIZR_REPAIR_SYSTEM:
+                print(f"[{repo_name}] [LLM] Repair Structurizr DSL")
+                dsl_repair_user = (
+                    "REPO_PROFILE_JSON:\n"
+                    + json.dumps(profile, indent=2, ensure_ascii=False)
+                    + "\n\nDSL_INPUT:\n"
+                    + dsl
+                )
+                repaired = ollama_chat(
+                    args.ollama, args.model,
+                    STRUCTURIZR_REPAIR_SYSTEM,
+                    dsl_repair_user,
+                    temperature=0.0,
+                    timeout_s=args.timeout,
+                    num_predict=args.num_predict,
+                    num_ctx=args.num_ctx,
+                    log=llm_log,
+                    label="structurizr_repair",
+                )
+                if repaired and repaired.strip():
+                    dsl = repaired
         system_id, system_label = extract_system_id_and_label(dsl, repo_name)
         dsl_root.mkdir(parents=True, exist_ok=True)
         dsl_path = dsl_root / _dsl_name(dsl_tmpl, system_id, repo_name)
