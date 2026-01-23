@@ -458,6 +458,22 @@ def build_routes_profile(
     return routes
 
 
+def load_routes_profile(path: Path) -> List[dict]:
+    """Load a routes.jsonl file into a list of dicts."""
+    if not path.exists():
+        return []
+    routes: List[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            routes.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return routes
+
+
 def format_routes_text(
     routes: List[dict],
     *,

@@ -224,8 +224,12 @@ def build_full_workspace(out_root: Path, out_path: Path) -> int:
             continue
 
         profile = load_json(repo_dir / "repo-profile.json") or {}
-        dsl_path = repo_dir / "workspace.dsl"
-        dsl_text = dsl_path.read_text(encoding="utf-8") if dsl_path.exists() else ""
+        dsl_text = ""
+        dsl_path = out_root / "dsl" / repo_dir.name / f"{repo_dir.name}.dsl"
+        if not dsl_path.exists():
+            dsl_path = repo_dir / "workspace.dsl"
+        if dsl_path.exists():
+            dsl_text = dsl_path.read_text(encoding="utf-8")
 
         label = str(profile.get("repo", {}).get("name") or repo_dir.name)
         if label in used_labels:
@@ -294,7 +298,8 @@ def main() -> int:
     args = ap.parse_args()
 
     out_root = Path(args.out).resolve()
-    out_path = Path(args.output).resolve() if args.output else (out_root / "workspace.full.dsl")
+    out_path = Path(args.output).resolve() if args.output else (out_root / "dsl" / "workspace_full.dsl")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     count = build_full_workspace(out_root, out_path)
     if count == 0:

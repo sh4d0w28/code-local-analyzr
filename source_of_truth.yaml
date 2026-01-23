@@ -8,6 +8,10 @@ paths:
   profile_raw_template: "{step_key}.profile.raw.txt"
   final_profile_filename: "repo-profile.json"
   workspace_filename: "workspace.dsl"
+  dsl_dir_name: "dsl"
+  dsl_filename_template: "{repo_name}.dsl"
+  view_filename_template: "{repo_name}View.dsl"
+  workspace_full_filename: "workspace_full.dsl"
   architecture_md_filename: "ARCHITECTURE.md"
   file_catalog_filename: "file-catalog.jsonl"
   routes_profile_filename: "routes.jsonl"
@@ -422,39 +426,56 @@ prompts:
     - For any new detail added, cite evidence as a file path in details/reason/responsibility fields.
     - If unsure, keep as "unknown" and add an open_questions entry naming which file to inspect.
   structurizr_system: |
-    Generate a Structurizr DSL (C4 Context + Container) from the given repo profile JSON.
-    Use only what is in the JSON; do not add invented dependencies.
+    Generate valid Structurizr DSL (model only) from REPO_PROFILE_JSON.
+    Use only what is in the JSON; do not invent systems, containers, or dependencies.
     Output ONLY DSL text, no markdown.
 
     Requirements:
-    - Do NOT output a workspace block for repo-level DSL.
-    - One softwareSystem for this repo.
-    - One person "User" if any container exposes APIs (http/grpc).
-    - Add containers from repo_profile.containers.
-    - Add relationships using depends_on and dependencies_outbound.
-    - For unknowns, omit rather than guess.
-
-    Container rules (strict):
-    - Inside each softwareSystem, containers must be wrapped in a container { ... } section.
+    - Do NOT output a workspace block.
+    - Define one primary softwareSystem for this repo with an explicit identifier derived from the repo name
+      (lowercase with underscores). Do NOT use literal placeholder names like "system_id".
+    - Use stable, lowercase identifiers with underscores for systems/containers/external elements.
+    - Identifiers must NOT contain dots; do not use hierarchy (no system.container).
+    - To keep IDs globally unique, prefix container IDs with the system_id (e.g., feed_center_user_service).
+    - Containers are direct children of the softwareSystem (no extra container { } wrapper).
+    - Add containers from repo_profile.containers with explicit identifiers derived from the container name
+      and prefixed by system_id (e.g., feed_center_user_service). Do NOT use literal placeholders like "container_id".
       Example:
-      softwareSystem my_system {
-        container {
-          container api "API" {
-            technology "Go"
-            description "Handles requests."
-          }
-        }
+      feed_center_user_service = container "User Service" {
+        technology "..."
+        description "..."
       }
     - Container properties allowed: description, technology, tags, url.
-    - Do NOT use image, details, or any other custom properties.
-    - Prefer putting technology/description inside the container block, not as positional args.
+    - Do NOT use image, details, depends_on, or any custom properties.
+    - Do NOT invent components or nested elements.
 
-    Relationship rules:
-    - When targeting a container, qualify it with its system: system_id.container_id.
-      Example: my_system -> my_system.postgres "Depends on".
+    People:
+    - If repo_profile.apis indicates HTTP or gRPC (case-insensitive), or any container exposes HTTP/gRPC, add:
+      CustomerPerson = person "Customer"
+    - Prefer relationships from CustomerPerson to API containers (type "service" or exposes).
+      If no clear API container exists, relate CustomerPerson to the softwareSystem.
+    - Use relationship labels: "Uses HTTP API" and/or "Uses gRPC API".
+
+    Data stores and external deps:
+    - Use repo_profile.data_stores to add containers for databases/caches/queues
+      (inside the primary softwareSystem).
+      If details mention a specific tech (e.g., PostgreSQL, Redis, Kafka), use it
+      for the container name and technology; otherwise use the type.
+    - Do not create a data store container if a container with the same name/identifier already exists.
+    - Use repo_profile.dependencies_outbound to add external softwareSystem elements
+      (outside the primary softwareSystem).
+
+    Relationships:
+    - Use A -> B "Description" syntax (no "relationship" keyword).
+    - Never relate a softwareSystem to its own containers.
+    - For each container.depends_on entry:
+      * If it matches another container in the same system, relate container -> container.
+      * Else if it matches a data store container or external element, relate container -> that element.
+      * If no match, omit rather than guess.
 
     Validation:
-    - If you notice any invalid syntax or disallowed fields, rewrite the entire DSL so it is valid.
+    - Ensure every referenced identifier is defined.
+    - If you notice invalid syntax, rewrite the DSL to be valid.
   structurizr_repair_system: |
     You repair Structurizr DSL generated for a single repository.
     You will receive:
@@ -464,17 +485,25 @@ prompts:
     Output ONLY corrected DSL text, no markdown.
 
     Rules:
-    - Do NOT output a workspace block for repo-level DSL.
+    - Do NOT output a workspace block.
     - Use only information from REPO_PROFILE_JSON; drop invented items.
-    - One softwareSystem for this repo.
-    - One person "User" if any container exposes APIs (http/grpc).
-    - Add containers from repo_profile.containers.
-    - Add relationships using depends_on and dependencies_outbound.
-    - For unknowns, omit rather than guess.
-    - Containers must be inside a container { ... } section within the softwareSystem.
+    - Define one primary softwareSystem with an explicit identifier derived from the repo name (no "system_id").
+    - Use stable, lowercase identifiers with underscores for systems/containers/external elements.
+    - Identifiers must NOT contain dots; do not use hierarchy (no system.container).
+    - To keep IDs globally unique, prefix container IDs with the system_id (e.g., feed_center_user_service).
+    - Add containers from repo_profile.containers as direct children (no container { } wrapper) with explicit identifiers
+      derived from container names and prefixed by system_id (no "container_id").
     - Container properties allowed: description, technology, tags, url. Remove invalid ones.
-    - Prefer putting technology/description inside the container block, not as positional args.
-    - When targeting a container, qualify it with its system: system_id.container_id.
+    - Do NOT include depends_on inside container blocks.
+    - If repo_profile.apis indicates HTTP or gRPC (case-insensitive), or any container exposes HTTP/gRPC, add:
+      CustomerPerson = person "Customer"
+      and relationships to API containers when possible; otherwise to the softwareSystem.
+    - Use repo_profile.data_stores to add database/cache/queue containers (inside the system).
+    - Do not create a data store container if a container with the same name/identifier already exists.
+    - Use repo_profile.dependencies_outbound to add external softwareSystem elements.
+    - Relationship syntax: A -> B "Description" (no "relationship" keyword).
+    - Never relate a softwareSystem to its own containers.
+    - Ensure all referenced identifiers are defined.
     - If DSL_INPUT is already valid, return an equivalent DSL (may be identical).
   json_repair_system: |
     You are a strict JSON repair tool.

@@ -230,6 +230,7 @@ All flags (from `python run_local_c4.py --help`):
 - `--mermaid`: Generate Mermaid C4 markdown (default: off).
 - `--verbose`: Log file selection, progress, and prompt sizes (default: off).
 - `--skip-aggregate`: Skip merged workspace generation (default: off).
+- `--render-only`: Generate `workspace.dsl` and optional Mermaid output from existing `repo-profile.json` without re-analyzing repositories.
 
 Notes:
 - Set `MODEL` env var to override the default model without passing `--model`.
@@ -243,6 +244,11 @@ Notes:
 For each repo:
 ```
 architecture-out/
+  dsl/
+    <repo-name>/
+      <repo-name>.dsl
+      <repo-name>View.dsl
+    workspace_full.dsl
   repos/<repo-name>/
     file-catalog.jsonl
     routes.jsonl
