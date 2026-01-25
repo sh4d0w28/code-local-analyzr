@@ -252,14 +252,21 @@ def _normalize_c4_container(
     label_to_id = {label.lower(): cid for cid, label in container_defs}
 
     for c in profile_containers:
-        name = str(c.get("name") or "").strip()
+        if isinstance(c, dict):
+            name = str(c.get("name") or "").strip()
+            tech = str(c.get("tech") or "")
+            resp = str(c.get("responsibility") or "")
+        elif isinstance(c, str):
+            name = c.strip()
+            tech = ""
+            resp = ""
+        else:
+            continue
         if not name:
             continue
         label_key = name.lower()
         cid = label_to_id.get(label_key) or _slugify_id(name)
         if cid not in container_ids:
-            tech = str(c.get("tech") or "")
-            resp = str(c.get("responsibility") or "")
             line = f'Container({cid}, "{_escape_label(name)}", "{_escape_label(tech)}", "{_escape_label(resp)}")'
             container_lines.append(line)
             container_defs.append((cid, name))
@@ -273,15 +280,28 @@ def _normalize_c4_container(
             ext_ids.add(m.group(1))
 
     ext_map: dict[str, str] = {}
-    for dep in outbound_deps:
-        target = str(dep.get("target") or "").strip()
+
+    def _iter_outbound(entries: List[object]) -> Iterable[tuple[str, str]]:
+        for dep in entries:
+            if isinstance(dep, dict):
+                target = str(dep.get("target") or "").strip()
+                reason = str(dep.get("reason") or "").strip()
+            elif isinstance(dep, str):
+                target = dep.strip()
+                reason = ""
+            else:
+                continue
+            if target:
+                yield target, reason
+
+    for target, reason in _iter_outbound(outbound_deps):
         if not target:
             continue
         ext_id = _slugify_id(target)
         if ext_id in ext_ids:
             ext_map[target.lower()] = ext_id
             continue
-        reason = str(dep.get("reason") or "External system").strip()
+        reason = reason or "External system"
         external_lines.append(f'System_Ext({ext_id}, "{_escape_label(target)}", "{_escape_label(reason)}")')
         ext_ids.add(ext_id)
         ext_map[target.lower()] = ext_id
@@ -290,9 +310,12 @@ def _normalize_c4_container(
     store_lines: List[str] = []
     store_ids: List[str] = []
     for store in data_stores:
-        if not isinstance(store, dict):
+        if isinstance(store, dict):
+            store_id, line = _infer_store_node(store, used_ids)
+        elif isinstance(store, str) and store.strip():
+            store_id, line = _infer_store_node({"type": store.strip(), "details": ""}, used_ids)
+        else:
             continue
-        store_id, line = _infer_store_node(store, used_ids)
         store_lines.append(line)
         store_ids.append(store_id)
 
@@ -307,12 +330,18 @@ def _normalize_c4_container(
     if container_list and ext_map:
         depends_map: dict[str, set[str]] = {}
         for c in profile_containers:
-            name = str(c.get("name") or "").strip()
+            if isinstance(c, dict):
+                name = str(c.get("name") or "").strip()
+                deps_raw = c.get("depends_on") or []
+            elif isinstance(c, str):
+                name = c.strip()
+                deps_raw = []
+            else:
+                continue
             if not name:
                 continue
             cid = label_to_id.get(name.lower()) or _slugify_id(name)
-            deps = c.get("depends_on") or []
-            dep_set = {str(d).strip().lower() for d in deps if isinstance(d, str)}
+            dep_set = {str(d).strip().lower() for d in deps_raw if isinstance(d, str)}
             depends_map[cid] = dep_set
 
         if depends_map:

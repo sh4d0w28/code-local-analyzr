@@ -197,7 +197,7 @@ Here is the high-level prompt flow and what each step produces:
 - Step 05 update: `PROFILE_UPDATE_SYSTEM` + `05_deps_datastores.evidence.txt` -> `05_deps_datastores.profile.json`.
 - Step 06 update: `PROFILE_UPDATE_SYSTEM` + `06_configs.evidence.txt` -> `06_configs.profile.json`.
 - JSON repair: if any profile step fails to parse, `JSON_REPAIR_SYSTEM` is invoked and the raw LLM output is saved.
-- Final outputs: `STRUCTURIZR_SYSTEM` -> `workspace.dsl`; optional `MERMAID_C4_SYSTEM` -> `workspace.mermaid.md` (sanitized post-process).
+- Final outputs: `STRUCTURIZR_SYSTEM` -> `workspace.dsl`; optional `MERMAID_C4_SYSTEM` -> `<repo-name>_mermaid.md` (sanitized post-process).
 
 ---
 
@@ -250,10 +250,11 @@ architecture-out/
       <repo-name>.dsl
       <repo-name>View.dsl
     workspace_full.dsl
+  mermaid/
+    <repo-name>_mermaid.md
   repos/<repo-name>/
     file-catalog.jsonl
     routes.jsonl
-    workspace.mermaid.md
     steps/
       01_docs_infra.evidence.txt
       01_docs_infra.sources.txt
@@ -284,7 +285,7 @@ architecture-out/
 - `ARCHITECTURE.md`: human-readable summary
 - `file-catalog.jsonl`: per-file LLM categories and summaries (when `--classify-files` is enabled)
 - `routes.jsonl`: extracted routes (default unless `--no-routes-profile` is used)
-- `workspace.mermaid.md`: Mermaid C4 markdown (when `--mermaid` is enabled)
+- `<repo-name>_mermaid.md`: Mermaid C4 markdown (when `--mermaid` is enabled)
 - `workspace.full.dsl`: merged Structurizr DSL across all repos (shared infra de-duplicated)
 
 You can also build the merged DSL without rerunning analysis:

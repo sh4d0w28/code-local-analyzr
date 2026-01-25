@@ -219,6 +219,13 @@ def main() -> int:
         except Exception as e:
             raise RuntimeError(f'Invalid DSL filename template "{template}": {e}') from e
 
+    def _mermaid_name(template: str, system_id: str, repo_name: str) -> str:
+        """Render the Mermaid filename from templates."""
+        try:
+            return template.format(system_id=system_id, repo_name=repo_name)
+        except Exception as e:
+            raise RuntimeError(f'Invalid mermaid filename template "{template}": {e}') from e
+
     steps_dir_name = str(paths_cfg.get("steps_dir_name", "steps"))
     evidence_tmpl = str(paths_cfg.get("evidence_filename_template", "{step_key}.evidence.txt"))
     sources_tmpl = str(paths_cfg.get("sources_filename_template", "{step_key}.sources.txt"))
@@ -232,7 +239,8 @@ def main() -> int:
     md_name = str(paths_cfg.get("architecture_md_filename", "ARCHITECTURE.md"))
     catalog_name = str(paths_cfg.get("file_catalog_filename", "file-catalog.jsonl"))
     routes_name = str(paths_cfg.get("routes_profile_filename", "routes.jsonl"))
-    mermaid_name = str(paths_cfg.get("mermaid_filename", "workspace.mermaid.md"))
+    mermaid_dir_name = str(paths_cfg.get("mermaid_dir_name", "mermaid"))
+    mermaid_tmpl = str(paths_cfg.get("mermaid_filename_template", paths_cfg.get("mermaid_filename", "workspace.mermaid.md")))
 
     include_size = bool(sources_cfg.get("include_file_size", True))
     include_mtime = bool(sources_cfg.get("include_mtime", False))
@@ -269,7 +277,7 @@ def main() -> int:
         final_profile_path = repo_out / final_profile_name
         dsl_root = out_root / dsl_dir_name / repo_name
         md_path = repo_out / md_name
-        mermaid_path = repo_out / mermaid_name
+        mermaid_root = out_root / mermaid_dir_name
         routes_text = ""
         routes_text_mermaid = ""
         routes_entries = None
@@ -587,6 +595,8 @@ def main() -> int:
                 num_ctx=args.num_ctx,
                 log=llm_log,
             )
+            mermaid_root.mkdir(parents=True, exist_ok=True)
+            mermaid_path = mermaid_root / _mermaid_name(mermaid_tmpl, system_id, repo_name)
             mermaid_path.write_text(mermaid_md, encoding="utf-8")
         print(f"[{repo_name}] [OK] wrote {final_profile_path}, {dsl_path}, {view_path}, {md_path}")
 

@@ -39,6 +39,13 @@ _ALIAS_MAP = {
 }
 
 
+_LIB_IMPORT_RE = re.compile(
+    r"^(?:[a-z][a-z0-9+.-]*\\.)+[a-z]{2,}(?:/.*)?$",
+    re.IGNORECASE,
+)
+_PKG_PREFIX_RE = re.compile(r"^(com|org|io|net)\\.[A-Za-z0-9_.-]+$")
+
+
 def _escape(text: str) -> str:
     """Escape text for DSL string literals."""
     text = str(text)
@@ -58,6 +65,22 @@ def slugify(text: str) -> str:
     if slug[0].isdigit():
         slug = f"_{slug}"
     return slug
+
+
+def _is_library_target(target: str) -> bool:
+    """Heuristic: treat package/module import paths as libraries, not systems."""
+    target = target.strip()
+    if not target:
+        return True
+    if "://" in target:
+        return False
+    if "/" in target:
+        return True
+    if _LIB_IMPORT_RE.match(target):
+        return True
+    if _PKG_PREFIX_RE.match(target):
+        return True
+    return False
 
 
 def unique_id(base: str, used: Set[str]) -> str:
@@ -146,7 +169,13 @@ def render_structurizr(profile: dict) -> str:
     used_ids: Set[str] = set()
     used_ids.add(system_id)
 
-    containers_in: List[dict] = list(profile.get("containers") or [])
+    containers_raw = list(profile.get("containers") or [])
+    containers_in: List[dict] = []
+    for item in containers_raw:
+        if isinstance(item, dict):
+            containers_in.append(item)
+        elif isinstance(item, str) and item.strip():
+            containers_in.append({"name": item.strip()})
     container_defs: List[dict] = []
     container_ids_by_slug: Dict[str, str] = {}
 
@@ -179,8 +208,14 @@ def render_structurizr(profile: dict) -> str:
     store_defs: List[dict] = []
     store_ids_by_slug: Dict[str, str] = {}
     for store in profile.get("data_stores", []) or []:
-        store_type = str(store.get("type") or "").strip()
-        details = _escape(str(store.get("details") or "").strip())
+        if isinstance(store, dict):
+            store_type = str(store.get("type") or "").strip()
+            details = _escape(str(store.get("details") or "").strip())
+        elif isinstance(store, str):
+            store_type = store.strip()
+            details = ""
+        else:
+            continue
         label, tech = _infer_store_label(store_type, details)
         base = f"{system_id}_{slugify(label)}"
         if base in used_ids:
@@ -199,11 +234,32 @@ def render_structurizr(profile: dict) -> str:
         if store_type:
             store_ids_by_slug[slugify(store_type)] = sid
 
+    build = profile.get("build_and_runtime", {}) or {}
+    skip_targets: Set[str] = set()
+    for key in ("build_tools", "runtime"):
+        for item in build.get(key, []) or []:
+            raw = str(item).strip()
+            if not raw:
+                continue
+            skip_targets.add(raw.lower())
+            skip_targets.add(slugify(raw))
+
     external_defs: List[dict] = []
     external_ids_by_slug: Dict[str, str] = {}
     for dep in profile.get("dependencies_outbound", []) or []:
-        target = str(dep.get("target") or "").strip()
+        if isinstance(dep, dict):
+            target = str(dep.get("target") or "").strip()
+            reason = _escape(str(dep.get("reason") or "").strip())
+        elif isinstance(dep, str):
+            target = dep.strip()
+            reason = ""
+        else:
+            continue
         if not target:
+            continue
+        if target.lower() in skip_targets or slugify(target) in skip_targets:
+            continue
+        if _is_library_target(target):
             continue
         target_slug = slugify(target)
         if target_slug in container_ids_by_slug or target_slug in store_ids_by_slug:
@@ -216,7 +272,7 @@ def render_structurizr(profile: dict) -> str:
             {
                 "id": eid,
                 "label": _escape(target),
-                "desc": _escape(str(dep.get("reason") or "").strip()),
+                "desc": reason,
             }
         )
         external_ids_by_slug[slugify(target)] = eid

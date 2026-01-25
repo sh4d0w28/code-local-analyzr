@@ -9,7 +9,11 @@ from typing import List
 def write_arch_md(out_path: Path, profile: dict) -> None:
     """Write a Markdown summary from a repo profile."""
     lines: List[str] = []
-    repo_name = profile.get("repo", {}).get("name", "Repository")
+    repo = profile.get("repo")
+    if isinstance(repo, dict):
+        repo_name = repo.get("name", "Repository")
+    else:
+        repo_name = "Repository"
     lines.append(f"# {repo_name} Architecture\n")
 
     lines.append("## Overview\n")
@@ -28,7 +32,10 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
         lines.append("- unknown\n")
     else:
         for a in apis:
-            lines.append(f"- **{a.get('type','unknown')}**: {a.get('details','')}\n")
+            if isinstance(a, dict):
+                lines.append(f"- **{a.get('type','unknown')}**: {a.get('details','')}\n")
+            else:
+                lines.append(f"- {a}\n")
 
     lines.append("\n## Data stores\n")
     stores = profile.get("data_stores", []) or []
@@ -36,7 +43,10 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
         lines.append("- unknown\n")
     else:
         for s in stores:
-            lines.append(f"- {s.get('type','unknown')}: {s.get('details','')}\n")
+            if isinstance(s, dict):
+                lines.append(f"- {s.get('type','unknown')}: {s.get('details','')}\n")
+            else:
+                lines.append(f"- {s}\n")
 
     lines.append("\n## Containers\n")
     containers = profile.get("containers", []) or []
@@ -44,14 +54,22 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
         lines.append("- unknown\n")
     else:
         for c in containers:
-            lines.append(f"### {c.get('name','unknown')}\n")
-            lines.append(f"- Type: {c.get('type','unknown')}\n")
-            lines.append(f"- Tech: {c.get('tech','unknown')}\n")
-            lines.append(f"- Responsibility: {c.get('responsibility','unknown')}\n")
-            exposes = c.get("exposes", []) or []
-            deps = c.get("depends_on", []) or []
-            lines.append(f"- Exposes: {', '.join(exposes) if exposes else 'unknown'}\n")
-            lines.append(f"- Depends on: {', '.join(deps) if deps else 'none/unknown'}\n\n")
+            if isinstance(c, dict):
+                lines.append(f"### {c.get('name','unknown')}\n")
+                lines.append(f"- Type: {c.get('type','unknown')}\n")
+                lines.append(f"- Tech: {c.get('tech','unknown')}\n")
+                lines.append(f"- Responsibility: {c.get('responsibility','unknown')}\n")
+                exposes = c.get("exposes", []) or []
+                deps = c.get("depends_on", []) or []
+                lines.append(f"- Exposes: {', '.join(exposes) if exposes else 'unknown'}\n")
+                lines.append(f"- Depends on: {', '.join(deps) if deps else 'none/unknown'}\n\n")
+            else:
+                lines.append(f"### {c}\n")
+                lines.append("- Type: unknown\n")
+                lines.append("- Tech: unknown\n")
+                lines.append("- Responsibility: unknown\n")
+                lines.append("- Exposes: unknown\n")
+                lines.append("- Depends on: none/unknown\n\n")
 
     lines.append("\n## Outbound dependencies\n")
     deps = profile.get("dependencies_outbound", []) or []
@@ -59,7 +77,10 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
         lines.append("- unknown\n")
     else:
         for d in deps:
-            lines.append(f"- {d.get('target','unknown')}: {d.get('reason','')}\n")
+            if isinstance(d, dict):
+                lines.append(f"- {d.get('target','unknown')}: {d.get('reason','')}\n")
+            else:
+                lines.append(f"- {d}\n")
 
     lines.append("\n## Open questions\n")
     oq = profile.get("open_questions", []) or []

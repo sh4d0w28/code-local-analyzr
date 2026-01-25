@@ -12,6 +12,8 @@ paths:
   dsl_filename_template: "{repo_name}.dsl"
   view_filename_template: "{repo_name}View.dsl"
   workspace_full_filename: "workspace_full.dsl"
+  mermaid_dir_name: "mermaid"
+  mermaid_filename_template: "{repo_name}_mermaid.md"
   architecture_md_filename: "ARCHITECTURE.md"
   file_catalog_filename: "file-catalog.jsonl"
   routes_profile_filename: "routes.jsonl"
@@ -410,6 +412,9 @@ prompts:
     Rules:
     - Put evidence references in details/reason fields as file paths (e.g., "Dockerfile", "k8s/deployment.yaml", "cmd/api/main.go").
     - Prefer conservative outputs; unknown is acceptable.
+    - dependencies_outbound MUST be external systems/services only (APIs, databases, queues, third-party SaaS).
+    - Do NOT add dependencies_outbound from package manifests (pom.xml, build.gradle, go.mod, go.sum, package.json, requirements.txt, etc.).
+    - Do NOT add dependencies_outbound for libraries/modules, base Docker images, language runtimes, or build tools.
   profile_update_system: |
     You update an existing repo architecture profile using ONLY the provided NEW_EVIDENCE.
     Do not invent. If NEW_EVIDENCE contradicts existing fields, update them and add a short note into open_questions.
@@ -425,6 +430,8 @@ prompts:
     - De-duplicate list items.
     - For any new detail added, cite evidence as a file path in details/reason/responsibility fields.
     - If unsure, keep as "unknown" and add an open_questions entry naming which file to inspect.
+    - dependencies_outbound MUST be external systems/services only; ignore package manifests (pom.xml/go.mod/go.sum/etc.),
+      libraries/modules, base Docker images, language runtimes, or build tools.
   structurizr_system: |
     Generate valid Structurizr DSL (model only) from REPO_PROFILE_JSON.
     Use only what is in the JSON; do not invent systems, containers, or dependencies.
