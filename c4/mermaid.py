@@ -20,6 +20,30 @@ SYSTEM_EXT_ID_RE = re.compile(r"^\s*System_Ext\(\s*([A-Za-z0-9_]+)\s*,")
 CONTAINER_LINE_RE = re.compile(
     r"^\s*Container(?:Db|Queue|_Ext|Db_Ext|Queue_Ext)?\(\s*([A-Za-z0-9_]+)\s*,\s*\"([^\"]+)\""
 )
+EXT_LABEL_RE = re.compile(r"^\s*(?:System_Ext|Container_Ext)\(\s*[A-Za-z0-9_]+\s*,\s*\"([^\"]+)\"")
+LIB_IMPORT_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*\.)+[a-z]{2,}(?:/.*)?$", re.IGNORECASE)
+PKG_PREFIX_RE = re.compile(r"^(com|org|io|net)\.[A-Za-z0-9_.-]+$")
+DOCKER_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?::[A-Za-z0-9_.-]+)?$")
+DOCKER_BASE_NAMES = {
+    "alpine",
+    "busybox",
+    "scratch",
+    "debian",
+    "ubuntu",
+    "centos",
+    "rockylinux",
+    "amazonlinux",
+    "distroless",
+    "golang",
+    "python",
+    "node",
+    "openjdk",
+    "temurin",
+    "corretto",
+    "amazoncorretto",
+    "maven",
+    "gradle",
+}
 
 
 def _sanitize_label_text(text: str) -> str:
@@ -50,6 +74,47 @@ def _slugify_id(text: str) -> str:
     """Make a Mermaid-safe identifier."""
     slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
     return slug or "system"
+
+
+def _is_library_target(target: str) -> bool:
+    """Heuristic: treat package/module paths as libraries, not external systems."""
+    target = target.strip()
+    if not target:
+        return True
+    if "://" in target:
+        return False
+    if "/" in target:
+        return True
+    if LIB_IMPORT_RE.match(target):
+        return True
+    if PKG_PREFIX_RE.match(target):
+        return True
+    if _is_docker_image_target(target):
+        return True
+    return False
+
+
+def _is_docker_image_target(target: str) -> bool:
+    """Treat base Docker images/runtime tags as non-external dependencies."""
+    target = target.strip().lower()
+    if not target:
+        return False
+    if "/" in target:
+        return False
+    if not DOCKER_IMAGE_RE.match(target):
+        return False
+    base = target.split(":", 1)[0]
+    if base in DOCKER_BASE_NAMES:
+        return True
+    if "distroless" in base or "debian" in base or "ubuntu" in base:
+        return True
+    return False
+
+
+def _extract_ext_label(line: str) -> str:
+    """Extract label from System_Ext/Container_Ext line if present."""
+    m = EXT_LABEL_RE.match(line)
+    return m.group(1) if m else ""
 
 
 def _escape_label(text: str) -> str:
@@ -209,6 +274,7 @@ def _normalize_c4_container(
     profile_containers: List[dict],
     data_stores: List[dict],
     outbound_deps: List[dict],
+    skip_targets: Optional[set[str]] = None,
 ) -> List[str]:
     """Rebuild C4Container view with proper boundaries and external deps."""
     # Adds stores and outbound systems inferred from the profile.
@@ -238,7 +304,16 @@ def _normalize_c4_container(
             continue
 
         if line.strip().startswith(("Person(", "System(", "System_Ext(", "Container_Ext(")):
-            external_lines.append(line.strip())
+            ext_line = line.strip()
+            label = _extract_ext_label(ext_line)
+            if label:
+                label_norm = label.lower()
+                label_slug = _slugify_id(label)
+                if skip_targets and (label_norm in skip_targets or label_slug in skip_targets):
+                    continue
+                if _is_library_target(label):
+                    continue
+            external_lines.append(ext_line)
             continue
 
         if line.strip().startswith("Rel("):
@@ -296,6 +371,12 @@ def _normalize_c4_container(
 
     for target, reason in _iter_outbound(outbound_deps):
         if not target:
+            continue
+        target_norm = target.lower()
+        target_slug = _slugify_id(target)
+        if skip_targets and (target_norm in skip_targets or target_slug in skip_targets):
+            continue
+        if _is_library_target(target):
             continue
         ext_id = _slugify_id(target)
         if ext_id in ext_ids:
@@ -429,6 +510,7 @@ def _sanitize_c4_block(
     profile_containers: List[dict],
     data_stores: List[dict],
     outbound_deps: List[dict],
+    skip_targets: Optional[set[str]] = None,
 ) -> List[str]:
     """Sanitize a single Mermaid block based on its C4 type."""
     block_type = None
@@ -448,6 +530,7 @@ def _sanitize_c4_block(
             profile_containers=profile_containers,
             data_stores=data_stores,
             outbound_deps=outbound_deps,
+            skip_targets=skip_targets,
         )
 
     if block_type == "C4Component":
@@ -469,6 +552,7 @@ def sanitize_mermaid_markdown(
     profile_containers: List[dict],
     data_stores: List[dict],
     outbound_deps: List[dict],
+    skip_targets: Optional[set[str]] = None,
 ) -> str:
     """Process a Mermaid markdown document and fix invalid C4 constructs."""
     lines = text.splitlines()
@@ -493,6 +577,7 @@ def sanitize_mermaid_markdown(
                     profile_containers=profile_containers,
                     data_stores=data_stores,
                     outbound_deps=outbound_deps,
+                    skip_targets=skip_targets,
                 )
             )
             out.append(line)
@@ -504,15 +589,16 @@ def sanitize_mermaid_markdown(
 
     if in_block:
         out.extend(
-            _sanitize_c4_block(
-                block_lines,
-                repo_name=repo_name,
-                container_name=container_name,
-                profile_containers=profile_containers,
-                data_stores=data_stores,
-                outbound_deps=outbound_deps,
+                _sanitize_c4_block(
+                    block_lines,
+                    repo_name=repo_name,
+                    container_name=container_name,
+                    profile_containers=profile_containers,
+                    data_stores=data_stores,
+                    outbound_deps=outbound_deps,
+                    skip_targets=skip_targets,
+                )
             )
-        )
 
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
@@ -557,12 +643,137 @@ def generate_mermaid_c4(
         container_name = f"{repo_name} App"
     data_stores = profile.get("data_stores") or []
     outbound_deps = profile.get("dependencies_outbound") or []
+    build = profile.get("build_and_runtime", {}) or {}
+    skip_targets: set[str] = set()
+    for key in ("build_tools", "runtime"):
+        for item in build.get(key, []) or []:
+            raw = str(item).strip()
+            if not raw:
+                continue
+            skip_targets.add(raw.lower())
+            skip_targets.add(_slugify_id(raw))
     profile_containers = containers if isinstance(containers, list) else []
-    return sanitize_mermaid_markdown(
+    sanitized = sanitize_mermaid_markdown(
         raw,
         repo_name=repo_name,
         container_name=container_name,
         profile_containers=profile_containers,
         data_stores=data_stores if isinstance(data_stores, list) else [],
         outbound_deps=outbound_deps if isinstance(outbound_deps, list) else [],
+        skip_targets=skip_targets,
     )
+    if "```mermaid" not in sanitized:
+        if log:
+            log("[MERMAID] fallback: model output missing mermaid blocks")
+        return _fallback_mermaid_markdown(profile)
+    return sanitized
+
+
+def _api_types_from_profile(profile: dict) -> set[str]:
+    types: set[str] = set()
+    for api in profile.get("apis", []) or []:
+        raw = str(api.get("type", "")).lower() if isinstance(api, dict) else str(api).lower()
+        if "http" in raw:
+            types.add("http")
+        if "grpc" in raw:
+            types.add("grpc")
+    for c in profile.get("containers", []) or []:
+        exposes = c.get("exposes") if isinstance(c, dict) else []
+        for expose in exposes or []:
+            text = str(expose).lower()
+            if "http" in text:
+                types.add("http")
+            if "grpc" in text:
+                types.add("grpc")
+    return types
+
+
+def _iter_outbound_targets(profile: dict) -> List[str]:
+    targets: List[str] = []
+    seen = set()
+    for dep in profile.get("dependencies_outbound", []) or []:
+        if isinstance(dep, dict):
+            target = str(dep.get("target") or dep.get("name") or "").strip()
+        else:
+            target = str(dep or "").strip()
+        if not target:
+            continue
+        if _is_library_target(target):
+            continue
+        key = target.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(target)
+    return targets
+
+
+def _fallback_mermaid_markdown(profile: dict) -> str:
+    """Build a minimal, valid Mermaid C4 doc when the model output is unusable."""
+    repo_name = str(profile.get("repo", {}).get("name") or "System")
+    system_id = _slugify_id(repo_name)
+    containers = profile.get("containers") or []
+    data_stores = profile.get("data_stores") or []
+    api_types = _api_types_from_profile(profile)
+    outbound_targets = _iter_outbound_targets(profile)
+
+    container_defs: List[tuple[str, str, str, str]] = []
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "App")
+        cid = _slugify_id(f"{system_id}_{name}")
+        tech = str(c.get("tech") or "")
+        desc = str(c.get("responsibility") or "")
+        container_defs.append((cid, name, tech, desc))
+
+    store_defs: List[tuple[str, str]] = []
+    for store in data_stores:
+        if isinstance(store, dict):
+            name = str(store.get("type") or "datastore")
+        else:
+            name = str(store or "datastore")
+        sid = _slugify_id(f"{system_id}_{name}")
+        store_defs.append((sid, name))
+
+    ext_defs: List[tuple[str, str]] = []
+    for target in outbound_targets:
+        eid = _slugify_id(f"ext_{target}")
+        ext_defs.append((eid, target))
+
+    lines: List[str] = []
+    lines.append(f"# {repo_name} - C4 Architecture")
+    lines.append("## Context")
+    lines.append("```mermaid")
+    lines.append("C4Context")
+    lines.append(f'System({system_id}, "{repo_name}", "System")')
+    if api_types:
+        lines.append('Person(customer_person, "Customer", "API user")')
+        if "http" in api_types:
+            lines.append(f'Rel(customer_person, {system_id}, "Uses HTTP API")')
+        if "grpc" in api_types:
+            lines.append(f'Rel(customer_person, {system_id}, "Uses gRPC API")')
+    for eid, label in ext_defs:
+        lines.append(f'System_Ext({eid}, "{label}", "External System")')
+        lines.append(f'Rel({system_id}, {eid}, "Depends on")')
+    lines.append("```")
+    lines.append("## Container")
+    lines.append("```mermaid")
+    lines.append("C4Container")
+    lines.append(f'System_Boundary({system_id}, "{repo_name}") {{')
+    if container_defs:
+        for cid, label, tech, desc in container_defs:
+            lines.append(f'  Container({cid}, "{label}", "{_escape_label(tech)}", "{_escape_label(desc)}")')
+    else:
+        lines.append(f'  Container({system_id}_app, "{repo_name} App", "unknown", "unknown")')
+    for sid, label in store_defs:
+        lines.append(f'  ContainerDb({sid}, "{label}", "", "Data store")')
+    lines.append("}")
+    for eid, label in ext_defs:
+        lines.append(f'System_Ext({eid}, "{label}", "External System")')
+    lines.append("```")
+    lines.append("## Component")
+    lines.append("No component-level evidence detected.")
+    lines.append("## Code")
+    lines.append("No code-level evidence detected.")
+    return "\n".join(lines).strip() + "\n"

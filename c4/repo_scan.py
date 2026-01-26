@@ -233,7 +233,13 @@ def glob_match(path_posix: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path_posix, pattern)
 
 
-def select_step_files(repo: Path, files: List[Path], step: Step) -> List[Path]:
+def select_step_files(
+    repo: Path,
+    files: List[Path],
+    step: Step,
+    *,
+    apply_max_files: bool = True,
+) -> List[Path]:
     """Select files relevant to a step based on globs/keywords."""
     selected: List[Path] = []
 
@@ -262,9 +268,19 @@ def select_step_files(repo: Path, files: List[Path], step: Step) -> List[Path]:
             selected.append(p)
 
     selected.sort(key=lambda x: relposix(repo, x))
-    if step.max_files is not None:
+    if apply_max_files and step.max_files is not None:
         selected = selected[: step.max_files]
     return selected
+
+
+def truncate_text_bytes(text: str, max_bytes: int) -> str:
+    """Trim text to a byte length, preserving UTF-8 safety."""
+    if max_bytes <= 0:
+        return ""
+    raw = text.encode("utf-8", errors="ignore")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def build_step_evidence(
@@ -307,6 +323,7 @@ def build_step_evidence(
                     context_lines=snippet_context_lines,
                     max_bytes=max_file_bytes,
                 )
+                content = truncate_text_bytes(content, max_file_bytes)
                 content = redact(content)
                 chunk = f"\n===== FILE: {rp} =====\n{content}\n"
                 b = chunk.encode("utf-8", errors="ignore")
@@ -342,7 +359,8 @@ def build_step_evidence(
                         log(
                             f"[CHUNK] {step.key} {rp} part={chunk_index}/{est_label} bytes={start}-{end}"
                         )
-                    content = redact(chunk_text)
+                    content = truncate_text_bytes(chunk_text, max_file_bytes)
+                    content = redact(content)
                     chunk_label = f"{rp} (chunk {chunk_index}"
                     if est_total is not None:
                         chunk_label += f"/{est_total}"
@@ -359,6 +377,7 @@ def build_step_evidence(
                 continue
 
             content = read_file_head_tail(p, max_bytes=max_file_bytes)
+            content = truncate_text_bytes(content, max_file_bytes)
         except Exception as e:
             if log is not None:
                 log(f"[SKIP] {step.key} {rp} read_error={type(e).__name__}")

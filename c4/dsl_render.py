@@ -44,6 +44,27 @@ _LIB_IMPORT_RE = re.compile(
     re.IGNORECASE,
 )
 _PKG_PREFIX_RE = re.compile(r"^(com|org|io|net)\\.[A-Za-z0-9_.-]+$")
+_DOCKER_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?::[A-Za-z0-9_.-]+)?$")
+_DOCKER_BASE_NAMES = {
+    "alpine",
+    "busybox",
+    "scratch",
+    "debian",
+    "ubuntu",
+    "centos",
+    "rockylinux",
+    "amazonlinux",
+    "distroless",
+    "golang",
+    "python",
+    "node",
+    "openjdk",
+    "temurin",
+    "corretto",
+    "amazoncorretto",
+    "maven",
+    "gradle",
+}
 
 
 def _escape(text: str) -> str:
@@ -79,6 +100,25 @@ def _is_library_target(target: str) -> bool:
     if _LIB_IMPORT_RE.match(target):
         return True
     if _PKG_PREFIX_RE.match(target):
+        return True
+    if _is_docker_image_target(target):
+        return True
+    return False
+
+
+def _is_docker_image_target(target: str) -> bool:
+    """Treat base Docker images/runtime tags as non-external dependencies."""
+    target = target.strip().lower()
+    if not target:
+        return False
+    if "/" in target:
+        return False
+    if not _DOCKER_IMAGE_RE.match(target):
+        return False
+    base = target.split(":", 1)[0]
+    if base in _DOCKER_BASE_NAMES:
+        return True
+    if "distroless" in base or "debian" in base or "ubuntu" in base:
         return True
     return False
 

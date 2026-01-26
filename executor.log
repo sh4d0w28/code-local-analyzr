@@ -1,0 +1,19 @@
+[feed-center-audit] [DSL] Programmatic render
+[feed-center-audit] [LLM] Generate Mermaid C4
+[feed-center-audit] [LLM] mermaid model=qwen2.5-coder:7b-instruct prompt_chars=6027 prompt_bytes=6027 num_ctx=163840 num_predict=32768
+[feed-center-audit] [OK] wrote /Users/maksim/projects/aimodels/architecture-out/repos/feed-center-audit/repo-profile.json, /Users/maksim/projects/aimodels/architecture-out/dsl/feed-center-audit/feed-center-audit.dsl, /Users/maksim/projects/aimodels/architecture-out/dsl/feed-center-audit/feed-center-auditView.dsl, /Users/maksim/projects/aimodels/architecture-out/repos/feed-center-audit/ARCHITECTURE.md
+[feed-center-post] [DSL] Programmatic render
+[feed-center-post] [LLM] Generate Mermaid C4
+[feed-center-post] [LLM] mermaid model=qwen2.5-coder:7b-instruct prompt_chars=4713 prompt_bytes=4713 num_ctx=163840 num_predict=32768
+[feed-center-post] [OK] wrote /Users/maksim/projects/aimodels/architecture-out/repos/feed-center-post/repo-profile.json, /Users/maksim/projects/aimodels/architecture-out/dsl/feed-center-post/feed-center-post.dsl, /Users/maksim/projects/aimodels/architecture-out/dsl/feed-center-post/feed-center-postView.dsl, /Users/maksim/projects/aimodels/architecture-out/repos/feed-center-post/ARCHITECTURE.md
+[feed-center-consumer] [DSL] Programmatic render
+Traceback (most recent call last):
+  File "/Users/maksim/projects/aimodels/run_local_c4.py", line 8, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/maksim/projects/aimodels/c4/runner.py", line 540, in main
+    dsl = render_structurizr(profile)
+  File "/Users/maksim/projects/aimodels/c4/dsl_render.py", line 205, in render_structurizr
+    target = str(dep.get("target") or "").strip()
+                 ^^^^^^^
+AttributeError: 'str' object has no attribute 'get'

@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import sys
+import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +20,7 @@ from .dsl_render import render_structurizr
 from .mermaid import generate_mermaid_c4
 from .ollama_client import ollama_chat
 from .output import write_arch_md
+from .profile_normalize import normalize_profile
 from .prompts import (
     PROFILE_INIT_SYSTEM,
     PROFILE_UPDATE_SYSTEM,
@@ -76,6 +79,124 @@ def _truncate_text_bytes(text: str, max_bytes: int) -> str:
     if len(raw) <= max_bytes:
         return text
     return raw[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _format_duration(seconds: float) -> str:
+    """Format elapsed seconds into a compact, human-readable string."""
+    if seconds < 0:
+        seconds = 0.0
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m{secs:04.1f}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h{int(minutes):02d}m{secs:04.1f}s"
+
+
+def _canon_item(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, sort_keys=True, ensure_ascii=True)
+        except TypeError:
+            return str(value).strip()
+    return str(value).strip()
+
+
+def _build_unique_items(values: list[object]) -> tuple[list[tuple[str, object]], set[str]]:
+    items: list[tuple[str, object]] = []
+    seen: set[str] = set()
+    for item in values:
+        key = _canon_item(item)
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append((key, item))
+    return items, seen
+
+
+def _merge_list_additive(
+    prev_list: list[object],
+    updated_list: list[object],
+) -> tuple[list[object], int, int]:
+    updated_items, updated_set = _build_unique_items(updated_list)
+    prev_items, prev_set = _build_unique_items(prev_list)
+    kept = len(prev_set - updated_set)
+    added = len(updated_set - prev_set)
+    merged = [item for _, item in updated_items]
+    for key, item in prev_items:
+        if key not in updated_set:
+            merged.append(item)
+    return merged, kept, added
+
+
+def _merge_profile_additive(prev: dict, updated: dict) -> tuple[dict, dict]:
+    """Merge update output with previous profile so new steps only add data."""
+    if not isinstance(prev, dict) or not isinstance(updated, dict):
+        return deepcopy(updated) if isinstance(updated, dict) else deepcopy(prev), {"added": {}, "kept": {}}
+    merged = deepcopy(updated)
+    info: dict[str, dict[str, int]] = {"added": {}, "kept": {}}
+
+    for key, value in prev.items():
+        if key not in merged:
+            merged[key] = deepcopy(value)
+
+    prev_repo = prev.get("repo") if isinstance(prev.get("repo"), dict) else None
+    updated_repo = updated.get("repo") if isinstance(updated.get("repo"), dict) else None
+    if prev_repo and not updated_repo:
+        merged["repo"] = deepcopy(prev_repo)
+    elif prev_repo and updated_repo:
+        merged_repo = deepcopy(updated_repo)
+        for key, value in prev_repo.items():
+            if key not in merged_repo:
+                merged_repo[key] = deepcopy(value)
+        merged["repo"] = merged_repo
+
+    if not str(merged.get("primary_language") or "").strip() and prev.get("primary_language"):
+        merged["primary_language"] = prev.get("primary_language")
+        info["kept"]["primary_language"] = 1
+
+    prev_build = prev.get("build_and_runtime") if isinstance(prev.get("build_and_runtime"), dict) else {}
+    updated_build = updated.get("build_and_runtime") if isinstance(updated.get("build_and_runtime"), dict) else {}
+    merged_build = deepcopy(updated_build) if isinstance(updated_build, dict) else {}
+    for key, value in prev_build.items():
+        if key not in merged_build:
+            merged_build[key] = deepcopy(value)
+    for subkey in ("build_tools", "runtime"):
+        prev_list = prev_build.get(subkey) if isinstance(prev_build.get(subkey), list) else []
+        updated_list = updated_build.get(subkey) if isinstance(updated_build.get(subkey), list) else []
+        merged_list, kept, added = _merge_list_additive(prev_list, updated_list)
+        merged_build[subkey] = merged_list
+        if kept:
+            info["kept"][f"build_and_runtime.{subkey}"] = kept
+        if added:
+            info["added"][f"build_and_runtime.{subkey}"] = added
+    merged["build_and_runtime"] = merged_build
+
+    for key in ("entrypoints", "apis", "data_stores", "containers", "dependencies_outbound", "open_questions"):
+        prev_list = prev.get(key) if isinstance(prev.get(key), list) else []
+        updated_list = updated.get(key) if isinstance(updated.get(key), list) else []
+        merged_list, kept, added = _merge_list_additive(prev_list, updated_list)
+        merged[key] = merged_list
+        if kept:
+            info["kept"][key] = kept
+        if added:
+            info["added"][key] = added
+
+    return merged, info
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    parts = [f"{key}+{value}" for key, value in sorted(counts.items())]
+    return ", ".join(parts)
 
 
 def main() -> int:
@@ -148,6 +269,20 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    run_log_path: Optional[Path] = None
+
+    def _append_log(line: str) -> None:
+        if run_log_path is None:
+            return
+        run_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with run_log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    def _log(msg: str, *, stderr: bool = False) -> None:
+        stream = sys.stderr if stderr else sys.stdout
+        print(msg, file=stream)
+        _append_log(msg)
+
     prompt_budget_bytes = None
     if args.respect_num_ctx:
         prompt_budget_bytes = _estimate_prompt_budget_bytes(
@@ -157,43 +292,45 @@ def main() -> int:
             args.ctx_bytes_per_token,
         )
         if prompt_budget_bytes <= 0:
-            print(
+            _log(
                 "[WARN] num_ctx too small for num_predict + ctx_reserve_tokens; "
                 "ctx budgeting disabled.",
-                file=sys.stderr,
+                stderr=True,
             )
             prompt_budget_bytes = None
 
     catalog_path = Path(args.catalog).expanduser().resolve()
     if not catalog_path.exists():
-        print(f'[ERROR] Catalog file not found: "{catalog_path}"', file=sys.stderr)
+        _log(f'[ERROR] Catalog file not found: "{catalog_path}"', stderr=True)
         return 2
 
     try:
         catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
     except Exception as e:
-        print(f'[ERROR] Failed to read YAML: "{catalog_path}": {e}', file=sys.stderr)
+        _log(f'[ERROR] Failed to read YAML: "{catalog_path}": {e}', stderr=True)
         return 2
 
     if not isinstance(catalog, dict) or "root" not in catalog or "repos" not in catalog:
-        print('[ERROR] Catalog YAML must contain keys: "root" and "repos"', file=sys.stderr)
+        _log('[ERROR] Catalog YAML must contain keys: "root" and "repos"', stderr=True)
         return 2
 
     root = Path(str(catalog["root"])).expanduser().resolve()
     repos = catalog["repos"]
     if not isinstance(repos, list):
-        print('[ERROR] "repos" must be a list', file=sys.stderr)
+        _log('[ERROR] "repos" must be a list', stderr=True)
         return 2
 
     ok_repos, errors = validate_catalog(root, repos)
     if errors:
-        print("[ERROR] Catalog validation failed:", file=sys.stderr)
+        _log("[ERROR] Catalog validation failed:", stderr=True)
         for e in errors:
-            print(f"  - {e}", file=sys.stderr)
+            _log(f"  - {e}", stderr=True)
         return 2
 
     out_root = Path(args.out).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
+    run_log_path = out_root / "run.log"
+    _append_log(f"[RUN] start {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     paths_cfg = get_paths_config()
     sources_cfg = get_sources_config()
@@ -268,9 +405,9 @@ def main() -> int:
         steps_out = repo_out / steps_dir_name
         steps_out.mkdir(parents=True, exist_ok=True)
 
-        def _repo_log(msg: str) -> None:
+        def _repo_log(msg: str, *, stderr: bool = False) -> None:
             """Prefix log lines with the repo name."""
-            print(f"[{repo_name}] {msg}")
+            _log(f"[{repo_name}] {msg}", stderr=stderr)
 
         llm_log = _repo_log if args.verbose else None
 
@@ -282,20 +419,17 @@ def main() -> int:
         routes_text_mermaid = ""
         routes_entries = None
         profile: Optional[dict] = None
+        step_durations: dict[str, float] = {}
+        c4_duration = 0.0
+        mermaid_duration = 0.0
 
         if args.render_only:
             if not final_profile_path.exists():
-                print(
-                    f"[{repo_name}] [ERROR] Missing repo-profile.json; rerun without --render-only.",
-                    file=sys.stderr,
-                )
+                _repo_log("[ERROR] Missing repo-profile.json; rerun without --render-only.", stderr=True)
                 continue
             profile = _load_json(final_profile_path)
             if profile is None:
-                print(
-                    f"[{repo_name}] [ERROR] Failed to read repo-profile.json; rerun without --render-only.",
-                    file=sys.stderr,
-                )
+                _repo_log("[ERROR] Failed to read repo-profile.json; rerun without --render-only.", stderr=True)
                 continue
             if args.routes_profile:
                 routes_path = repo_out / routes_name
@@ -303,6 +437,12 @@ def main() -> int:
                     routes_entries = load_routes_profile(routes_path)
                     routes_text = format_routes_text(routes_entries)
                     routes_text_mermaid = format_routes_text(routes_entries, sanitize_for_mermaid=True)
+            profile = normalize_profile(
+                profile,
+                repo_name=repo_name,
+                repo_path=str(repo_path),
+                routes_entries=routes_entries or None,
+            )
         else:
             all_files = list_repo_files(repo_path)
 
@@ -346,6 +486,10 @@ def main() -> int:
 
             # Iterate steps to refine the profile with additional evidence.
             for step in STEPS:
+                step_started = time.perf_counter()
+                profile_check_msg: Optional[str] = None
+                merge_info: Optional[dict] = None
+
                 if file_catalog is not None:
                     step_files = []
                     for p in all_files:
@@ -363,15 +507,15 @@ def main() -> int:
 
                 log = None
                 if args.verbose:
-                    print(f"[{repo_name}] [STEP FILES] {step.key} ({len(step_files)} files)")
+                    _repo_log(f"[STEP FILES] {step.key} ({len(step_files)} files)")
                     for p in step_files:
-                        print(f"[{repo_name}] [STEP FILE] {step.key} {relposix(repo_path, p)}")
+                        _repo_log(f"[STEP FILE] {step.key} {relposix(repo_path, p)}")
 
-                    def _log(msg: str) -> None:
+                    def _step_log(msg: str) -> None:
                         """Log step-specific messages with repo prefix."""
-                        print(f"[{repo_name}] {msg}")
+                        _repo_log(msg)
 
-                    log = _log
+                    log = _step_log
 
                 current_profile_json = None
                 if profile is None:
@@ -453,7 +597,7 @@ def main() -> int:
                 evidence_path.write_text(evidence, encoding="utf-8")
 
                 if profile is None:
-                    print(f"[{repo_name}] [LLM INIT] {step.key}")
+                    _repo_log(f"[LLM INIT] {step.key}")
                     user = user_prefix + evidence
                     raw = ollama_chat(
                         args.ollama, args.model,
@@ -479,11 +623,24 @@ def main() -> int:
                     if not profile:
                         raw_path = steps_out / _step_name(profile_raw_tmpl, step.key)
                         raw_path.write_text(raw, encoding="utf-8")
-                        print(f"[{repo_name}] [WARN] Could not parse init JSON; raw saved.", file=sys.stderr)
+                        _repo_log("[WARN] Could not parse init JSON; raw saved.", stderr=True)
+                        profile_check_msg = "skipped (init parse failed)"
+                        step_elapsed = time.perf_counter() - step_started
+                        step_durations[step.key] = step_elapsed
+                        _repo_log(f"[TIME] step={step.key} duration={_format_duration(step_elapsed)}")
+                        if profile_check_msg:
+                            _repo_log(f"[PROFILE] {step.key} {profile_check_msg}")
                         break
                     _normalize_profile(profile, repo_name, repo_path)
+                    profile = normalize_profile(
+                        profile,
+                        repo_name=repo_name,
+                        repo_path=str(repo_path),
+                        routes_entries=routes_entries or None,
+                    )
+                    profile_check_msg = "baseline (init)"
                 else:
-                    print(f"[{repo_name}] [LLM UPDATE] {step.key}")
+                    _repo_log(f"[LLM UPDATE] {step.key}")
                     if current_profile_json is None:
                         current_profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
                         user_prefix = (
@@ -516,30 +673,54 @@ def main() -> int:
                     if not updated:
                         raw_path = steps_out / _step_name(profile_raw_tmpl, step.key)
                         raw_path.write_text(raw, encoding="utf-8")
-                        print(f"[{repo_name}] [WARN] Could not parse update JSON; raw saved.", file=sys.stderr)
+                        _repo_log("[WARN] Could not parse update JSON; raw saved.", stderr=True)
+                        profile_check_msg = "skipped (update parse failed)"
                     else:
-                        profile = updated
+                        prev_profile = deepcopy(profile) if isinstance(profile, dict) else {}
+                        profile, merge_info = _merge_profile_additive(prev_profile, updated)
                         _normalize_profile(profile, repo_name, repo_path)
+                        profile = normalize_profile(
+                            profile,
+                            repo_name=repo_name,
+                            repo_path=str(repo_path),
+                            routes_entries=routes_entries or None,
+                        )
+                        added_msg = _format_counts(merge_info.get("added", {})) if merge_info else "none"
+                        kept_msg = _format_counts(merge_info.get("kept", {})) if merge_info else "none"
+                        profile_check_msg = f"added={added_msg} preserved={kept_msg}"
 
                 # Persist a snapshot after each step for traceability.
                 snap_path = steps_out / _step_name(profile_snap_tmpl, step.key)
                 snap_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+                step_elapsed = time.perf_counter() - step_started
+                step_durations[step.key] = step_elapsed
+                _repo_log(f"[TIME] step={step.key} duration={_format_duration(step_elapsed)}")
+                if profile_check_msg:
+                    _repo_log(f"[PROFILE] {step.key} {profile_check_msg}")
 
             if profile is None:
-                print(f"[{repo_name}] [ERROR] No profile produced.", file=sys.stderr)
+                _repo_log("[ERROR] No profile produced.", stderr=True)
+                steps_total = sum(step_durations.values())
+                _repo_log(
+                    "[TIME] total steps={steps} c4=0ms mermaid=0ms total={total} (aborted)".format(
+                        steps=_format_duration(steps_total),
+                        total=_format_duration(steps_total),
+                    )
+                )
                 continue
 
             final_profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
 
         if profile is None:
-            print(f"[{repo_name}] [ERROR] No profile available for rendering.", file=sys.stderr)
+            _repo_log("[ERROR] No profile available for rendering.", stderr=True)
             continue
 
+        c4_started = time.perf_counter()
         if args.dsl_programmatic:
-            print(f"[{repo_name}] [DSL] Programmatic render")
+            _repo_log("[DSL] Programmatic render")
             dsl = render_structurizr(profile)
         else:
-            print(f"[{repo_name}] [LLM] Generate Structurizr DSL")
+            _repo_log("[LLM] Generate Structurizr DSL")
             dsl_user = "REPO_PROFILE_JSON:\n" + json.dumps(profile, indent=2, ensure_ascii=False)
             dsl = ollama_chat(
                 args.ollama, args.model,
@@ -553,7 +734,7 @@ def main() -> int:
                 label="structurizr",
             )
             if STRUCTURIZR_REPAIR_SYSTEM:
-                print(f"[{repo_name}] [LLM] Repair Structurizr DSL")
+                _repo_log("[LLM] Repair Structurizr DSL")
                 dsl_repair_user = (
                     "REPO_PROFILE_JSON:\n"
                     + json.dumps(profile, indent=2, ensure_ascii=False)
@@ -580,11 +761,14 @@ def main() -> int:
 
         view_path = dsl_root / _view_name(view_tmpl, system_id, repo_name)
         view_path.write_text(render_views(system_id, system_label), encoding="utf-8")
+        c4_duration = time.perf_counter() - c4_started
+        _repo_log(f"[TIME] c4={_format_duration(c4_duration)}")
 
         if not args.render_only:
             write_arch_md(md_path, profile)
         if args.mermaid:
-            print(f"[{repo_name}] [LLM] Generate Mermaid C4")
+            mermaid_started = time.perf_counter()
+            _repo_log("[LLM] Generate Mermaid C4")
             mermaid_md = generate_mermaid_c4(
                 profile,
                 routes_text=routes_text_mermaid or routes_text,
@@ -598,7 +782,25 @@ def main() -> int:
             mermaid_root.mkdir(parents=True, exist_ok=True)
             mermaid_path = mermaid_root / _mermaid_name(mermaid_tmpl, system_id, repo_name)
             mermaid_path.write_text(mermaid_md, encoding="utf-8")
-        print(f"[{repo_name}] [OK] wrote {final_profile_path}, {dsl_path}, {view_path}, {md_path}")
+            mermaid_duration = time.perf_counter() - mermaid_started
+            _repo_log(f"[TIME] mermaid={_format_duration(mermaid_duration)}")
+        _repo_log(f"[OK] wrote {final_profile_path}, {dsl_path}, {view_path}, {md_path}")
+        steps_total = sum(step_durations.values())
+        steps_label = _format_duration(steps_total)
+        if args.render_only:
+            steps_label = f"{steps_label} (render-only)"
+        mermaid_label = _format_duration(mermaid_duration)
+        if not args.mermaid:
+            mermaid_label = f"{mermaid_label} (skipped)"
+        total_time = steps_total + c4_duration + mermaid_duration
+        _repo_log(
+            "[TIME] total steps={steps} c4={c4} mermaid={mermaid} total={total}".format(
+                steps=steps_label,
+                c4=_format_duration(c4_duration),
+                mermaid=mermaid_label,
+                total=_format_duration(total_time),
+            )
+        )
 
     if not args.skip_aggregate:
         try:
@@ -609,10 +811,10 @@ def main() -> int:
             aggregate_path = aggregate_dir / workspace_full_name
             count = build_full_workspace(out_root, aggregate_path)
             if count == 0:
-                print("[WARN] No repositories found for aggregate workspace.", file=sys.stderr)
+                _log("[WARN] No repositories found for aggregate workspace.", stderr=True)
             else:
-                print(f"[OK] wrote {aggregate_path}")
+                _log(f"[OK] wrote {aggregate_path}")
         except Exception as e:
-            print(f"[WARN] Failed to build aggregate workspace: {e}", file=sys.stderr)
+            _log(f"[WARN] Failed to build aggregate workspace: {e}", stderr=True)
 
     return 0

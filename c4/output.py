@@ -19,8 +19,10 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
     lines.append("## Overview\n")
     lines.append(f"- **Primary language:** {profile.get('primary_language', 'unknown')}\n")
     br = profile.get("build_and_runtime", {}) or {}
-    lines.append(f"- **Build tools:** {', '.join(br.get('build_tools', []) or ['unknown'])}\n")
-    lines.append(f"- **Runtime:** {', '.join(br.get('runtime', []) or ['unknown'])}\n")
+    build_tools = [str(x) for x in (br.get("build_tools", []) or []) if x is not None]
+    runtime = [str(x) for x in (br.get("runtime", []) or []) if x is not None]
+    lines.append(f"- **Build tools:** {', '.join(build_tools or ['unknown'])}\n")
+    lines.append(f"- **Runtime:** {', '.join(runtime or ['unknown'])}\n")
 
     lines.append("\n## Entrypoints\n")
     for ep in profile.get("entrypoints", []) or ["unknown"]:
@@ -59,8 +61,10 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
                 lines.append(f"- Type: {c.get('type','unknown')}\n")
                 lines.append(f"- Tech: {c.get('tech','unknown')}\n")
                 lines.append(f"- Responsibility: {c.get('responsibility','unknown')}\n")
-                exposes = c.get("exposes", []) or []
-                deps = c.get("depends_on", []) or []
+                exposes_raw = c.get("exposes", []) or []
+                deps_raw = c.get("depends_on", []) or []
+                exposes = [str(x) for x in exposes_raw if x is not None]
+                deps = [str(x) for x in deps_raw if x is not None]
                 lines.append(f"- Exposes: {', '.join(exposes) if exposes else 'unknown'}\n")
                 lines.append(f"- Depends on: {', '.join(deps) if deps else 'none/unknown'}\n\n")
             else:

@@ -412,6 +412,8 @@ prompts:
     Rules:
     - Put evidence references in details/reason fields as file paths (e.g., "Dockerfile", "k8s/deployment.yaml", "cmd/api/main.go").
     - Prefer conservative outputs; unknown is acceptable.
+    - Entrypoints should be true application entrypoints (main/app/server/bootstrap). Exclude controllers, tests, DTOs, and MANIFEST files.
+    - API details should be actual routes/interfaces (OpenAPI/Swagger/Proto or explicit route lists). Do NOT list DTO/request/response classes as API details; use "unknown" if no routes/interfaces are present.
     - dependencies_outbound MUST be external systems/services only (APIs, databases, queues, third-party SaaS).
     - Do NOT add dependencies_outbound from package manifests (pom.xml, build.gradle, go.mod, go.sum, package.json, requirements.txt, etc.).
     - Do NOT add dependencies_outbound for libraries/modules, base Docker images, language runtimes, or build tools.
@@ -429,6 +431,8 @@ prompts:
     - Keep current values unless you have evidence to add/replace.
     - De-duplicate list items.
     - For any new detail added, cite evidence as a file path in details/reason/responsibility fields.
+    - Entrypoints should be true application entrypoints (main/app/server/bootstrap). Exclude controllers, tests, DTOs, and MANIFEST files.
+    - API details should be actual routes/interfaces (OpenAPI/Swagger/Proto or explicit route lists). Do NOT list DTO/request/response classes as API details; use "unknown" if no routes/interfaces are present.
     - If unsure, keep as "unknown" and add an open_questions entry naming which file to inspect.
     - dependencies_outbound MUST be external systems/services only; ignore package manifests (pom.xml/go.mod/go.sum/etc.),
       libraries/modules, base Docker images, language runtimes, or build tools.
