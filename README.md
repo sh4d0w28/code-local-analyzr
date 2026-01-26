@@ -179,13 +179,65 @@ OLLAMA_KEEP_ALIVE=-1 ollama serve
 
 ## 9 Analysis steps
 
-The analyzer runs the following steps in order (configured in `source_of_truth.yaml`):
-- `01_docs_infra`: docs, infra, CI/CD, and deployment descriptors to establish system context.
-- `02_build_deps`: build files, manifests, and API specs to detect languages, tools, and dependencies.
-- `03_entrypoints`: app bootstrap files to identify services, runtimes, and startup wiring.
-- `04_routing_api`: routers/controllers/handlers to map API surface and protocol types.
-- `05_deps_datastores`: clients/repositories/producers/consumers for databases, brokers, and outbound deps.
-- `06_configs`: config/env templates for ports, hosts, and integration endpoints.
+The analyzer runs the following steps in order (configured in `source_of_truth.yaml`). Each step has a clear intent and produces evidence + partial profile updates.
+
+### 01_docs_infra
+Step 1’s job is “Docs / Infra / CI.”
+It establishes the system’s baseline context so later steps interpret code in the right operational setting.
+
+What step 1 does in practice:
+- Scans README/ADR/docs for service purpose and architecture notes.
+- Pulls deployment artifacts (Docker/K8s/Helm/CI/CD) to infer runtime and environment.
+- Seeds early hints about infrastructure or external systems.
+
+### 02_build_deps
+Step 2’s job is “Build + Dependencies.”
+It identifies how the repo is built and what toolchain/specs define the service.
+
+What step 2 does in practice:
+- Scans build manifests (`pom.xml`, `go.mod`, `package.json`, etc.).
+- Detects API specs (OpenAPI/Swagger/AsyncAPI, `.proto` files).
+- Sets build/runtime metadata used throughout the profile.
+
+### 03_entrypoints
+Step 3’s job is “Entrypoints / Bootstrap.”
+It narrows to the actual startup points so the profile knows how the app launches.
+
+What step 3 does in practice:
+- Scans entrypoint candidates (`main.go`, `*Application.java`, `cmd/**/main.go`, `server.*`, `index.*`).
+- Filters out controllers/tests to avoid false “entrypoints.”
+- Produces a concise list of executable/bootstrapping files or commands.
+
+### 04_routing_api
+Step 4’s job is “Routing / API Surface.”
+It is the point where we extract and summarize the service’s API interface so the profile knows what endpoints exist and how they’re exposed.
+
+What step 4 does in practice:
+- Scans routing/controller/handler files (based on `source_of_truth.yaml` globs/keywords).
+- For Java/Spring that means `*Controller.java`; for Go it’s router/handler files, etc.
+- Extracts routes automatically (regex) into `routes.jsonl`.
+- This is separate from the LLM and captures method + path + handler.
+- Feeds those routes into the LLM to update the profile’s `apis` section.
+- Normalizes and summarizes: you get base-path counts + example endpoints instead of a huge unstructured list.
+- Adds structured API summaries (`summary` + `routes_file`) for programmatic analysis.
+
+### 05_deps_datastores
+Step 5’s job is “Datastores + Outbound Dependencies.”
+It identifies what the service depends on at runtime (DBs, queues, external APIs).
+
+What step 5 does in practice:
+- Scans clients/repositories/producers/consumers/DAO layers.
+- Extracts evidence of databases and external services.
+- Updates `data_stores` and `dependencies_outbound` with file-path evidence.
+
+### 06_configs
+Step 6’s job is “Config / Environment.”
+It pulls environment/config evidence that can confirm or refine dependencies.
+
+What step 6 does in practice:
+- Scans config and env files (`application.yml`, `.env`, `values.yaml`, etc.).
+- Extracts host/URL/port/queue hints.
+- Feeds the evidence into the profile and heuristic enrichment stage.
 
 Add `--verbose` to log per-file selection and LLM prompt sizes.
 Add `--classify-files` to build step inputs from an LLM file catalog instead of globs/keywords.

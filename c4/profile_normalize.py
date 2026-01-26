@@ -72,6 +72,25 @@ _HOST_LIKE_RE = re.compile(
     r"^[A-Za-z0-9_.-]+\.(com|net|org|io|co|dev|internal|local|svc|cluster|cloud|corp|prod|staging|test)$",
     re.IGNORECASE,
 )
+
+_PLACEHOLDER_RE = re.compile(
+    r"(no specific|not provided|not detected|unknown\s*\(routes not detected\))",
+    re.IGNORECASE,
+)
+
+_GENERIC_DEP_TARGETS = {
+    "http",
+    "https",
+    "jdbc",
+    "redis",
+    "postgres",
+    "postgresql",
+    "mysql",
+    "mongodb",
+    "kafka",
+    "amqp",
+    "grpc",
+}
 _API_DETAILS_SIGNAL_RE = re.compile(
     r"\b(GET|POST|PUT|PATCH|DELETE)\b\s*/|/api/|/v\d+/|\\bgrpc\\b|openapi|swagger|asyncapi|\\.proto",
     re.IGNORECASE,
@@ -197,6 +216,46 @@ def _routes_to_details(routes: List[dict], *, limit: int = 20) -> str:
     return ", ".join(items)
 
 
+def _routes_to_examples(routes: List[dict], *, limit: int = 6) -> List[str]:
+    details = _routes_to_details(routes, limit=limit)
+    if not details:
+        return []
+    return [d.strip() for d in details.split(",") if d.strip()][:limit]
+
+
+def _routes_to_base_counts(routes: List[dict], *, limit: int = 6) -> List[dict]:
+    counts: dict[str, int] = {}
+    for r in routes:
+        path = str(r.get("path") or "").strip()
+        base = _base_path(path)
+        if not base:
+            continue
+        counts[base] = counts.get(base, 0) + 1
+    if not counts:
+        return []
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    return [{"path": base, "count": count} for base, count in items[:limit]]
+
+
+def _grpc_service_counts(routes: List[dict], *, limit: int = 6) -> List[dict]:
+    services: dict[str, int] = {}
+    for r in routes:
+        method = str(r.get("method") or "").upper()
+        if method != "GRPC":
+            continue
+        handler = str(r.get("handler") or "").strip()
+        if not handler:
+            continue
+        service = handler.split("/", 1)[0]
+        if not service:
+            continue
+        services[service] = services.get(service, 0) + 1
+    if not services:
+        return []
+    items = sorted(services.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    return [{"service": svc, "count": count} for svc, count in items[:limit]]
+
+
 def _normalize_path(path: str) -> str:
     path = path.strip()
     if not path:
@@ -280,6 +339,36 @@ def _api_details_actionable(details: str) -> bool:
     return bool(_API_DETAILS_SIGNAL_RE.search(details))
 
 
+def _is_placeholder(details: str) -> bool:
+    if not details:
+        return True
+    return bool(_PLACEHOLDER_RE.search(details))
+
+
+def _dedupe_dicts(items: List[dict], *, keys: List[str]) -> List[dict]:
+    seen = set()
+    out: List[dict] = []
+    for item in items:
+        parts = []
+        for k in keys:
+            parts.append(str(item.get(k, "")).strip().lower())
+        key = "|".join(parts)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _store_key(store: dict) -> str:
+    type_key = str(store.get("type", "")).strip().lower()
+    details = str(store.get("details", "")).strip()
+    path_match = re.search(r"(/[^'\"\\s]+)", details)
+    if path_match:
+        return f"{type_key}|{path_match.group(1).lower()}"
+    return f"{type_key}|{details.lower()}"
+
+
 def _clean_open_question(q: str) -> Optional[str]:
     if not q:
         return None
@@ -334,8 +423,24 @@ def normalize_profile(
             elif isinstance(a, str) and a.strip():
                 apis_out.append({"type": "unknown", "details": a.strip()})
     if routes_entries:
-        http_details = _routes_to_details(routes_entries)
-        http_summary = _routes_to_summary(routes_entries)
+        http_routes = [
+            r
+            for r in routes_entries
+            if str(r.get("method") or "").upper() in _HTTP_METHODS
+        ]
+        grpc_routes = [
+            r
+            for r in routes_entries
+            if str(r.get("method") or "").upper() == "GRPC"
+        ]
+
+        http_details = _routes_to_details(http_routes)
+        http_summary = _routes_to_summary(http_routes)
+        http_struct = {
+            "total_routes": len(http_routes),
+            "base_paths": _routes_to_base_counts(http_routes),
+            "examples": _routes_to_examples(http_routes),
+        }
         if http_summary:
             http_details = f"Routes grouped by base path: {http_summary}. Examples: {http_details}" if http_details else f"Routes grouped by base path: {http_summary}."
         if http_details:
@@ -343,24 +448,48 @@ def normalize_profile(
             for api in apis_out:
                 if "http" in api.get("type", "").lower():
                     api["details"] = http_details
+                    api["summary"] = http_struct
+                    api["routes_file"] = "routes.jsonl"
                     found_http = True
             if not found_http:
-                apis_out.append({"type": "http", "details": http_details})
-        grpc_summary = _grpc_services_summary(routes_entries)
-        if grpc_summary:
+                apis_out.append(
+                    {
+                        "type": "http",
+                        "details": http_details,
+                        "summary": http_struct,
+                        "routes_file": "routes.jsonl",
+                    }
+                )
+        grpc_struct = {
+            "total_routes": len(grpc_routes),
+            "services": _grpc_service_counts(grpc_routes),
+        }
+        grpc_summary = _grpc_services_summary(grpc_routes)
+        if grpc_summary or grpc_struct.get("total_routes"):
             found_grpc = False
             for api in apis_out:
                 if "grpc" in api.get("type", "").lower():
-                    api["details"] = f"Services: {grpc_summary}"
+                    api["details"] = f"Services: {grpc_summary}" if grpc_summary else api.get("details", "")
+                    api["summary"] = grpc_struct
+                    api["routes_file"] = "routes.jsonl"
                     found_grpc = True
             if not found_grpc:
-                apis_out.append({"type": "grpc", "details": f"Services: {grpc_summary}"})
+                apis_out.append(
+                    {
+                        "type": "grpc",
+                        "details": f"Services: {grpc_summary}" if grpc_summary else "",
+                        "summary": grpc_struct,
+                        "routes_file": "routes.jsonl",
+                    }
+                )
     for api in apis_out:
         details = api.get("details", "")
         if _details_look_like_paths(details) and not routes_entries:
             api["details"] = "unknown (routes not detected)"
         elif not routes_entries and not _api_details_actionable(details):
             api["details"] = "unknown (routes not detected)"
+        if api.get("type", "").lower() == "unknown" and _is_placeholder(api.get("details", "")):
+            api["details"] = "Not detected; check routes.jsonl and controller/router annotations"
     apis_out = [
         a
         for a in apis_out
@@ -369,6 +498,7 @@ def normalize_profile(
             and not str(a.get("details", "")).strip()
         )
     ]
+    apis_out = _dedupe_dicts(apis_out, keys=["type", "details"])
     profile["apis"] = apis_out
 
     # Normalize data stores
@@ -385,11 +515,24 @@ def normalize_profile(
                 )
             elif isinstance(s, str) and s.strip():
                 stores_out.append({"type": s.strip(), "details": ""})
+    for store in stores_out:
+        if store.get("type", "").lower() == "unknown" and _is_placeholder(store.get("details", "")):
+            store["details"] = "Not detected; check config files and repository/DAO layers"
     stores_out = [
         s
         for s in stores_out
         if not (str(s.get("type", "")).strip().lower() == "unknown" and not str(s.get("details", "")).strip())
     ]
+    # Dedupe data stores by type + evidence path when possible.
+    seen_store_keys = set()
+    deduped_stores: List[dict] = []
+    for store in stores_out:
+        key = _store_key(store)
+        if key in seen_store_keys:
+            continue
+        seen_store_keys.add(key)
+        deduped_stores.append(store)
+    stores_out = deduped_stores
     profile["data_stores"] = stores_out
 
     # Normalize containers
@@ -419,6 +562,8 @@ def normalize_profile(
                         "depends_on": [],
                     }
                 )
+    if len(containers_out) == 1 and containers_out[0].get("name", "").strip().lower() == "unknown":
+        containers_out[0]["name"] = repo_name
     containers_out = [
         c
         for c in containers_out
@@ -452,6 +597,10 @@ def normalize_profile(
             if not target:
                 continue
             target_l = target.lower()
+            if target_l in _GENERIC_DEP_TARGETS:
+                continue
+            if "localhost" in target_l:
+                continue
             if target_l in skip_targets:
                 continue
             if _is_library_target(target):

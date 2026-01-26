@@ -67,8 +67,41 @@ def write_arch_md(out_path: Path, profile: dict) -> None:
         for a in apis:
             if isinstance(a, dict):
                 api_type = str(a.get("type") or "unknown")
-                details = str(a.get("details") or "").strip() or "Not detected"
-                lines.append(f"- **{api_type}**: {details}\n")
+                summary = a.get("summary") if isinstance(a.get("summary"), dict) else None
+                routes_file = str(a.get("routes_file") or "").strip()
+                details = str(a.get("details") or "").strip()
+                if summary:
+                    parts = []
+                    total_routes = summary.get("total_routes")
+                    if total_routes is not None:
+                        parts.append(f"total_routes={int(total_routes)}")
+                    if api_type.lower() == "http":
+                        base_paths = summary.get("base_paths") or []
+                        if base_paths:
+                            bases = ", ".join(
+                                [f"{b.get('path')} ({b.get('count')})" for b in base_paths if isinstance(b, dict)]
+                            )
+                            if bases:
+                                parts.append(f"base_paths=[{bases}]")
+                        examples = summary.get("examples") or []
+                        if examples:
+                            ex = ", ".join([str(x) for x in examples if x is not None])
+                            if ex:
+                                parts.append(f"examples=[{ex}]")
+                    if api_type.lower() == "grpc":
+                        services = summary.get("services") or []
+                        if services:
+                            sv = ", ".join(
+                                [f"{s.get('service')} ({s.get('count')})" for s in services if isinstance(s, dict)]
+                            )
+                            if sv:
+                                parts.append(f"services=[{sv}]")
+                    if routes_file:
+                        parts.append(f"routes_file={routes_file}")
+                    details_out = "; ".join(parts) if parts else (details or "Not detected")
+                else:
+                    details_out = details or "Not detected"
+                lines.append(f"- **{api_type}**: {details_out}\n")
             else:
                 lines.append(f"- {a}\n")
 

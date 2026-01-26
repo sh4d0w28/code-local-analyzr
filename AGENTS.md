@@ -15,6 +15,15 @@ Purpose: keep a lightweight, append-only record of changes and progress in this 
 - (fill in)
 
 ## Recent changes (newest first)
+- 2026-01-26 11:25 - Improved unknown details and deduped datastores; postprocessed auth outputs
+  - Files: c4/profile_normalize.py, architecture-out/repos/auth/repo-profile.json, architecture-out/repos/auth/ARCHITECTURE.md
+  - Notes: clearer unknown reasons, datastore dedupe by evidence path, cleaned dependencies in auth profile
+- 2026-01-26 11:05 - Added structured API summaries to profiles
+  - Files: c4/profile_normalize.py, c4/output.py, README.md
+  - Notes: apis now include summary + routes_file for HTTP/gRPC
+- 2026-01-26 10:45 - Expanded per-step descriptions in README
+  - Files: README.md
+  - Notes: added purpose/sources/outputs for steps 01-06
 - 2026-01-26 10:30 - Tightened entrypoint selection and filtering
   - Files: c4/runner.py, c4/profile_normalize.py
   - Notes: entrypoints step now filters by globs; command-like entrypoints kept, noisy class names dropped
