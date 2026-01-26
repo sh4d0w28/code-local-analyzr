@@ -32,6 +32,7 @@ from .prompts import (
 from .repo_scan import (
     build_step_evidence,
     build_step_sources,
+    glob_match,
     list_repo_files,
     relposix,
     select_step_files,
@@ -598,6 +599,13 @@ def main() -> int:
                     step_files = select_step_files(repo_path, all_files, step, apply_max_files=apply_step_max)
                 if args.analysis_mode != "lowmem" and len(step_files) > args.max_files_per_step:
                     step_files = step_files[: args.max_files_per_step]
+                if step.key == "03_entrypoints":
+                    filtered = []
+                    for p in step_files:
+                        rp = relposix(repo_path, p)
+                        if any(glob_match(rp, g) for g in step.globs):
+                            filtered.append(p)
+                    step_files = filtered
                 selected_step_files[step.key] = list(step_files)
                 total_bytes = 0
                 for p in step_files:

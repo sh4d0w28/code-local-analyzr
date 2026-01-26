@@ -49,6 +49,15 @@ _ENTRYPOINT_KEEP_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ENTRYPOINT_SECONDARY_RE = re.compile(
+    r"(Application|Main|Bootstrap|Server|Worker)\b|"
+    r"(\\|/)(cmd|bin)(\\|/)|"
+    r"(^|/)(main|app|server|index)\.",
+    re.IGNORECASE,
+)
+
+_ENTRYPOINT_COMMAND_RE = re.compile(r"^\s*(java|node|python|go|dotnet)\b", re.IGNORECASE)
+
 _ENTRYPOINT_DROP_RE = re.compile(
     r"(\\|/)(test|tests|spec)(\\|/)|Test\.(java|kt)$|_test\.go$|Controller\.java$|META-INF/MANIFEST\.MF$",
     re.IGNORECASE,
@@ -137,6 +146,11 @@ def _filter_entrypoints(entrypoints: List[str]) -> List[str]:
             kept.append(ep)
     if kept:
         return kept
+    secondary = [
+        ep for ep in entrypoints if _ENTRYPOINT_SECONDARY_RE.search(ep) or _ENTRYPOINT_COMMAND_RE.search(ep)
+    ]
+    if secondary:
+        return secondary
     # Fallback: drop only obvious test/controller/manifest noise.
     return [ep for ep in entrypoints if not _ENTRYPOINT_DROP_RE.search(ep)]
 

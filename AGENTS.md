@@ -15,6 +15,9 @@ Purpose: keep a lightweight, append-only record of changes and progress in this 
 - (fill in)
 
 ## Recent changes (newest first)
+- 2026-01-26 10:30 - Tightened entrypoint selection and filtering
+  - Files: c4/runner.py, c4/profile_normalize.py
+  - Notes: entrypoints step now filters by globs; command-like entrypoints kept, noisy class names dropped
 - 2026-01-26 10:05 - Documented system logic in README
   - Files: README.md
   - Notes: added pipeline summary (selection, batching, merge, enrichment)
