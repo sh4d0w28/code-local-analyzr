@@ -42,6 +42,17 @@ PRIVATE_KEY_BLOCK_RE = re.compile(
 AUTH_BEARER_RE = re.compile(r"(?i)(authorization:\s*bearer\s+)([A-Za-z0-9\-._~+/]+=*)")
 SIMPLE_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s'\"`]+)")
 
+GENERATED_FILE_PATTERNS = [
+    re.compile(r"\.pb\.go$", re.IGNORECASE),
+    re.compile(r"\.pb\.gw\.go$", re.IGNORECASE),
+    re.compile(r"_grpc\.pb\.go$", re.IGNORECASE),
+    re.compile(r"_pb2\.py$", re.IGNORECASE),
+    re.compile(r"\.gen\.go$", re.IGNORECASE),
+    re.compile(r"\.generated\.", re.IGNORECASE),
+    re.compile(r"\.swagger\.json$", re.IGNORECASE),
+    re.compile(r"\.openapi\.json$", re.IGNORECASE),
+]
+
 
 def redact(text: str) -> str:
     """Redact secrets from extracted text snippets."""
@@ -90,6 +101,15 @@ def file_is_text_candidate(p: Path) -> bool:
         return False
     if ext in TEXT_EXT_ALLOWLIST:
         return True
+    return False
+
+
+def is_generated_file(path_posix: str) -> bool:
+    """Check if a path looks like generated code/artifacts."""
+    low = path_posix.lower()
+    for rx in GENERATED_FILE_PATTERNS:
+        if rx.search(low):
+            return True
     return False
 
 
@@ -249,6 +269,8 @@ def select_step_files(
 
         if any(seg in low.split("/") for seg in IGNORE_DIRS):
             continue
+        if is_generated_file(rp):
+            continue
 
         if not file_is_text_candidate(p):
             continue
@@ -323,8 +345,8 @@ def build_step_evidence(
                     context_lines=snippet_context_lines,
                     max_bytes=max_file_bytes,
                 )
-                content = truncate_text_bytes(content, max_file_bytes)
                 content = redact(content)
+                content = truncate_text_bytes(content, max_file_bytes)
                 chunk = f"\n===== FILE: {rp} =====\n{content}\n"
                 b = chunk.encode("utf-8", errors="ignore")
                 if total + len(b) > max_step_bytes:
@@ -359,8 +381,8 @@ def build_step_evidence(
                         log(
                             f"[CHUNK] {step.key} {rp} part={chunk_index}/{est_label} bytes={start}-{end}"
                         )
-                    content = truncate_text_bytes(chunk_text, max_file_bytes)
-                    content = redact(content)
+                    content = redact(chunk_text)
+                    content = truncate_text_bytes(content, max_file_bytes)
                     chunk_label = f"{rp} (chunk {chunk_index}"
                     if est_total is not None:
                         chunk_label += f"/{est_total}"
@@ -377,13 +399,13 @@ def build_step_evidence(
                 continue
 
             content = read_file_head_tail(p, max_bytes=max_file_bytes)
+            content = redact(content)
             content = truncate_text_bytes(content, max_file_bytes)
         except Exception as e:
             if log is not None:
                 log(f"[SKIP] {step.key} {rp} read_error={type(e).__name__}")
             continue
 
-        content = redact(content)
         chunk = f"\n===== FILE: {rp} =====\n{content}\n"
         b = chunk.encode("utf-8", errors="ignore")
         if total + len(b) > max_step_bytes:

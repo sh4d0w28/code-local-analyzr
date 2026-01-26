@@ -127,6 +127,16 @@ Make sure Ollama is running with `OLLAMA_CONTEXT_LENGTH=163840` (or higher), or 
 If you want a lighter run, drop `--classify-files` and/or `--mermaid`.
 If you need to override defaults, add flags like `--num-ctx`, `--num-predict`, or `--no-respect-num-ctx`.
 
+Low-memory mode (small context windows) batches evidence per step:
+```bash
+python run_local_c4.py \
+  --catalog repos.yaml \
+  --out architecture-out \
+  --analysis-mode lowmem \
+  --num-ctx 20000 \
+  --num-predict 2048
+```
+
 Full inventory mode (LLM categorizes every text file; slow but thorough).
 Add these flags to any run above:
 ```bash
@@ -198,6 +208,40 @@ Here is the high-level prompt flow and what each step produces:
 - Step 06 update: `PROFILE_UPDATE_SYSTEM` + `06_configs.evidence.txt` -> `06_configs.profile.json`.
 - JSON repair: if any profile step fails to parse, `JSON_REPAIR_SYSTEM` is invoked and the raw LLM output is saved.
 - Final outputs: `STRUCTURIZR_SYSTEM` -> `workspace.dsl`; optional `MERMAID_C4_SYSTEM` -> `<repo-name>_mermaid.md` (sanitized post-process).
+
+Additional outputs:
+- `architecture-out/README.md`: top-level index with links to per-repo artifacts.
+- `repos/<repo>/coverage.json`: per-step file/byte counts and evidence limits.
+
+---
+
+## 11 System logic (selection, batching, merge)
+
+This section describes the current end-to-end logic used to build profiles and diagrams.
+
+### File discovery and selection
+- File list: prefers `git ls-files` (clean inputs), fallback to filesystem walk.
+- Filters: `ignore_dirs`, `ignore_exts`, generated artifacts (`*.pb.go`, `*_gw.go`, etc.).
+- Step selection: each step uses globs/keywords/snippet regexes from `source_of_truth.yaml`.
+
+### Evidence building
+- Each step builds an evidence blob with headers + truncated file content.
+- When snippet regexes exist, only matched snippets are included; otherwise head/tail.
+- Routes are extracted separately and appended to routing evidence (`routes.jsonl`).
+
+### Low‑memory batching (optional)
+- `--analysis-mode lowmem` splits each step into multiple batches.
+- Each batch runs the LLM and updates the profile; per‑batch artifacts are saved.
+- A step index file lists all batch evidence/sources files.
+
+### Profile merge & normalization
+- Step 01 initializes the profile; steps 02–06 update it.
+- Merge is additive: new items appended, existing preserved.
+- Normalization removes noisy `unknown`s, dedupes open questions, and summarizes routes.
+
+### Heuristic enrichment
+- After LLM steps, configs are scanned for datastore/dependency hints.
+- These hints are merged into the profile with file‑path evidence.
 
 ---
 
@@ -322,4 +366,13 @@ Ollama API base URL is typically:
 If needed, start:
 ```bash
 ollama serve
+```
+
+
+```sh
+# low-mem laptop (batched)
+python run_local_c4.py --catalog repos.yaml --analysis-mode lowmem --num-ctx 20000 --num-predict 2048
+
+# high-mem system (existing single-pass per step)
+python run_local_c4.py --catalog repos.yaml --analysis-mode highmem
 ```

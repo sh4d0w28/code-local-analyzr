@@ -17,6 +17,8 @@ from .config import get_paths_config, get_sources_config
 from .file_catalog import build_file_catalog, load_file_catalog
 from .json_tools import parse_or_repair_json
 from .dsl_render import render_structurizr
+from .heuristics import enrich_profile, infer_hints
+from .index import build_overview
 from .mermaid import generate_mermaid_c4
 from .ollama_client import ollama_chat
 from .output import write_arch_md
@@ -199,6 +201,83 @@ def _format_counts(counts: dict[str, int]) -> str:
     return ", ".join(parts)
 
 
+def _estimate_step_header_bytes(repo: Path, step: "Step") -> int:
+    header = [
+        f"REPO: {repo.name}",
+        f"PATH: {repo}",
+        f"STEP: {step.key} - {step.title}",
+        "-----",
+    ]
+    return len("\n".join(header).encode("utf-8", errors="ignore"))
+
+
+def _estimate_file_bytes(p: Path, *, max_file_bytes: int, overhead_bytes: int) -> int:
+    try:
+        size = p.stat().st_size
+    except Exception:
+        size = None
+    if size is None or size <= 0:
+        size = max_file_bytes
+    return min(size, max_file_bytes) + overhead_bytes
+
+
+def _split_files_for_budget(
+    repo: Path,
+    step: "Step",
+    files: list[Path],
+    *,
+    max_step_bytes: int,
+    max_file_bytes: int,
+    overhead_bytes: int,
+) -> list[list[Path]]:
+    if not files:
+        return []
+    header_bytes = _estimate_step_header_bytes(repo, step)
+    budget = max(0, max_step_bytes - header_bytes)
+    batches: list[list[Path]] = []
+    current: list[Path] = []
+    current_bytes = 0
+    for p in files:
+        est = _estimate_file_bytes(p, max_file_bytes=max_file_bytes, overhead_bytes=overhead_bytes)
+        if current and (current_bytes + est) > budget:
+            batches.append(current)
+            current = [p]
+            current_bytes = est
+        else:
+            current.append(p)
+            current_bytes += est
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _trim_routes_blob(
+    routes_text: str,
+    *,
+    max_step_bytes: int,
+    header_bytes: int,
+) -> str:
+    if not routes_text:
+        return ""
+    blob = "\n\n" + routes_text
+    if max_step_bytes <= 0:
+        return ""
+    max_blob_bytes = max_step_bytes - header_bytes
+    if max_blob_bytes <= 0:
+        return "\n[ROUTES_TRUNCATED]\n"
+    blob_bytes = len(blob.encode("utf-8", errors="ignore"))
+    if blob_bytes <= max_blob_bytes:
+        return blob
+    marker = "\n[ROUTES_TRUNCATED]\n"
+    marker_bytes = len(marker.encode("utf-8", errors="ignore"))
+    overhead_bytes = len("\n\n".encode("utf-8"))
+    allowed = max_blob_bytes - overhead_bytes - marker_bytes
+    if allowed <= 0:
+        return _truncate_text_bytes(marker, max_blob_bytes)
+    trimmed = _truncate_text_bytes(routes_text, allowed)
+    return "\n\n" + trimmed + marker
+
+
 def main() -> int:
     """Run the CLI and orchestrate per-repo analysis."""
     ap = argparse.ArgumentParser(description="Iterative C4 generator using local Ollama (step-by-step evidence)")
@@ -214,6 +293,18 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=7200, help="HTTP timeout seconds")
     ap.add_argument("--num-ctx", type=int, default=163840, help="Context window tokens for requests")
     ap.add_argument("--num-predict", type=int, default=32768, help="Max tokens to generate per request")
+    ap.add_argument(
+        "--analysis-mode",
+        choices=("highmem", "lowmem"),
+        default="highmem",
+        help="Analysis mode: highmem=single-pass per step, lowmem=batch steps to fit small contexts",
+    )
+    ap.add_argument(
+        "--lowmem-batch-max-files",
+        type=int,
+        default=0,
+        help="Max files per lowmem batch (0=auto by byte budget)",
+    )
     ap.add_argument(
         "--respect-num-ctx",
         dest="respect_num_ctx",
@@ -420,6 +511,8 @@ def main() -> int:
         routes_entries = None
         profile: Optional[dict] = None
         step_durations: dict[str, float] = {}
+        coverage_by_step: dict[str, dict] = {}
+        selected_step_files: dict[str, list[Path]] = {}
         c4_duration = 0.0
         mermaid_duration = 0.0
 
@@ -490,6 +583,7 @@ def main() -> int:
                 profile_check_msg: Optional[str] = None
                 merge_info: Optional[dict] = None
 
+                apply_step_max = args.analysis_mode != "lowmem"
                 if file_catalog is not None:
                     step_files = []
                     for p in all_files:
@@ -498,12 +592,19 @@ def main() -> int:
                         if entry and step.key in entry.get("categories", []):
                             step_files.append(p)
                     step_files.sort(key=lambda x: relposix(repo_path, x))
-                    if step.max_files is not None:
+                    if apply_step_max and step.max_files is not None:
                         step_files = step_files[: step.max_files]
                 else:
-                    step_files = select_step_files(repo_path, all_files, step)
-                if len(step_files) > args.max_files_per_step:
+                    step_files = select_step_files(repo_path, all_files, step, apply_max_files=apply_step_max)
+                if args.analysis_mode != "lowmem" and len(step_files) > args.max_files_per_step:
                     step_files = step_files[: args.max_files_per_step]
+                selected_step_files[step.key] = list(step_files)
+                total_bytes = 0
+                for p in step_files:
+                    try:
+                        total_bytes += p.stat().st_size
+                    except Exception:
+                        continue
 
                 log = None
                 if args.verbose:
@@ -518,6 +619,274 @@ def main() -> int:
                     log = _step_log
 
                 current_profile_json = None
+                if args.analysis_mode == "lowmem":
+                    lowmem_overhead_bytes = 220
+                    step_aborted = False
+                    profile_check_msg = None
+                    batch_messages: list[str] = []
+                    header_bytes = _estimate_step_header_bytes(repo_path, step)
+
+                    max_step_bytes = args.max_step_bytes
+                    max_file_bytes = args.max_file_bytes
+                    if prompt_budget_bytes is not None:
+                        max_step_bytes = _evidence_budget_bytes(
+                            system_text=PROFILE_UPDATE_SYSTEM if profile is not None else PROFILE_INIT_SYSTEM,
+                            user_prefix=(
+                                "CURRENT_PROFILE_JSON:\n"
+                                + (json.dumps(profile, indent=2, ensure_ascii=False) if profile else "")
+                                + "\n\nNEW_EVIDENCE:\n"
+                            )
+                            if profile is not None
+                            else (
+                                f"repo.name={repo_name}\n"
+                                f"repo.path={repo_path}\n\n"
+                                "EVIDENCE:\n"
+                            ),
+                            prompt_budget_bytes=prompt_budget_bytes,
+                            hard_cap=args.max_step_bytes,
+                        )
+                        if args.verbose and max_step_bytes < args.max_step_bytes:
+                            _repo_log(f"[CTX] {step.key} evidence_budget={max_step_bytes} bytes")
+
+                    if prompt_budget_bytes is not None:
+                        max_file_bytes = min(max_file_bytes, max_step_bytes)
+                    if max_step_bytes > 0:
+                        lowmem_file_cap = max_step_bytes - header_bytes - lowmem_overhead_bytes
+                        if lowmem_file_cap > 0:
+                            max_file_bytes = min(max_file_bytes, lowmem_file_cap)
+
+                    routes_blob = ""
+                    if routes_text and step.key == "04_routing_api":
+                        routes_blob = _trim_routes_blob(
+                            routes_text,
+                            max_step_bytes=max_step_bytes,
+                            header_bytes=header_bytes,
+                        )
+
+                    batches: list[tuple[list[Path], str]] = []
+                    if routes_blob:
+                        batches.append(([], routes_blob))
+
+                    if args.lowmem_batch_max_files and args.lowmem_batch_max_files > 0:
+                        for i in range(0, len(step_files), args.lowmem_batch_max_files):
+                            batches.append((step_files[i : i + args.lowmem_batch_max_files], ""))
+                    else:
+                        for files_batch in _split_files_for_budget(
+                            repo_path,
+                            step,
+                            step_files,
+                            max_step_bytes=max_step_bytes,
+                            max_file_bytes=max_file_bytes,
+                            overhead_bytes=lowmem_overhead_bytes,
+                        ):
+                            batches.append((files_batch, ""))
+
+                    if not batches:
+                        batches = [([], "")]
+                    coverage = {
+                        "files_total": len(step_files),
+                        "bytes_total": total_bytes,
+                        "batches": len(batches),
+                        "evidence_limited": False,
+                        "parse_failed": False,
+                    }
+
+                    evidence_index_lines = [
+                        f"REPO: {repo_name}",
+                        f"PATH: {repo_path}",
+                        f"STEP: {step.key} - {step.title}",
+                        "-----",
+                        f"BATCHES: {len(batches)}",
+                    ]
+                    sources_index_lines = list(evidence_index_lines)
+
+                    batch_total = len(batches)
+                    for batch_idx, (batch_files, batch_routes_blob) in enumerate(batches, start=1):
+                        batch_key = f"{step.key}.batch{batch_idx:02d}"
+                        _repo_log(
+                            f"[BATCH] {step.key} {batch_idx}/{batch_total} files={len(batch_files)} routes={'yes' if batch_routes_blob else 'no'}"
+                        )
+
+                        batch_max_step_bytes = max_step_bytes
+                        batch_max_file_bytes = max_file_bytes
+                        if prompt_budget_bytes is not None and profile is not None:
+                            batch_max_step_bytes = _evidence_budget_bytes(
+                                system_text=PROFILE_UPDATE_SYSTEM,
+                                user_prefix=(
+                                    "CURRENT_PROFILE_JSON:\n"
+                                    + json.dumps(profile, indent=2, ensure_ascii=False)
+                                    + "\n\nNEW_EVIDENCE:\n"
+                                ),
+                                prompt_budget_bytes=prompt_budget_bytes,
+                                hard_cap=args.max_step_bytes,
+                            )
+                            batch_max_step_bytes = min(batch_max_step_bytes, max_step_bytes)
+                            batch_max_file_bytes = min(batch_max_file_bytes, batch_max_step_bytes)
+                            lowmem_file_cap = batch_max_step_bytes - header_bytes - lowmem_overhead_bytes
+                            if lowmem_file_cap > 0:
+                                batch_max_file_bytes = min(batch_max_file_bytes, lowmem_file_cap)
+
+                        sources = build_step_sources(
+                            repo_path,
+                            batch_files,
+                            step,
+                            include_file_size=include_size,
+                            include_mtime=include_mtime,
+                            fmt=sources_fmt,
+                        )
+                        sources_path = steps_out / _step_name(sources_tmpl, batch_key)
+                        sources_path.write_text(sources, encoding="utf-8")
+
+                        evidence = build_step_evidence(
+                            repo_path,
+                            batch_files,
+                            step,
+                            max_step_bytes=batch_max_step_bytes,
+                            max_file_bytes=batch_max_file_bytes,
+                            max_snippets_per_file=args.max_snippets_per_file,
+                            snippet_context_lines=args.snippet_context_lines,
+                            chunk_large_files=args.chunk_large_files,
+                            log=log,
+                        )
+                        if batch_routes_blob:
+                            evidence = evidence + batch_routes_blob
+                        if "[STEP_EVIDENCE_LIMIT_REACHED]" in evidence:
+                            coverage["evidence_limited"] = True
+
+                        evidence_path = steps_out / _step_name(evidence_tmpl, batch_key)
+                        evidence_path.write_text(evidence, encoding="utf-8")
+
+                        if profile is None:
+                            _repo_log(f"[LLM INIT] {step.key} batch={batch_idx}/{batch_total}")
+                            system_prompt = PROFILE_INIT_SYSTEM
+                            user_prefix = (
+                                f"repo.name={repo_name}\n"
+                                f"repo.path={repo_path}\n\n"
+                                "EVIDENCE:\n"
+                            )
+                            user = user_prefix + evidence
+                            raw = ollama_chat(
+                                args.ollama, args.model,
+                                system_prompt,
+                                user,
+                                temperature=0.0,
+                                timeout_s=args.timeout,
+                                num_predict=args.num_predict,
+                                num_ctx=args.num_ctx,
+                                log=llm_log,
+                                label=f"profile_init:{batch_key}",
+                            )
+                            profile = parse_or_repair_json(
+                                raw,
+                                ollama_base=args.ollama,
+                                model=args.model,
+                                timeout_s=args.timeout,
+                                num_predict=args.num_predict,
+                                num_ctx=args.num_ctx,
+                                log=llm_log,
+                                label=f"json_repair:{batch_key}",
+                            )
+                            if not profile:
+                                raw_path = steps_out / _step_name(profile_raw_tmpl, batch_key)
+                                raw_path.write_text(raw, encoding="utf-8")
+                                _repo_log("[WARN] Could not parse init JSON; raw saved.", stderr=True)
+                                profile_check_msg = "skipped (init parse failed)"
+                                step_aborted = True
+                                coverage["parse_failed"] = True
+                                batch_messages.append(profile_check_msg)
+                                break
+                            _normalize_profile(profile, repo_name, repo_path)
+                            profile = normalize_profile(
+                                profile,
+                                repo_name=repo_name,
+                                repo_path=str(repo_path),
+                                routes_entries=routes_entries or None,
+                            )
+                            profile_check_msg = "baseline (init)"
+                        else:
+                            _repo_log(f"[LLM UPDATE] {step.key} batch={batch_idx}/{batch_total}")
+                            current_profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
+                            system_prompt = PROFILE_UPDATE_SYSTEM
+                            user_prefix = (
+                                "CURRENT_PROFILE_JSON:\n"
+                                + current_profile_json
+                                + "\n\nNEW_EVIDENCE:\n"
+                            )
+                            user = user_prefix + evidence
+                            raw = ollama_chat(
+                                args.ollama, args.model,
+                                system_prompt,
+                                user,
+                                temperature=0.0,
+                                timeout_s=args.timeout,
+                                num_predict=args.num_predict,
+                                num_ctx=args.num_ctx,
+                                log=llm_log,
+                                label=f"profile_update:{batch_key}",
+                            )
+                            updated = parse_or_repair_json(
+                                raw,
+                                ollama_base=args.ollama,
+                                model=args.model,
+                                timeout_s=args.timeout,
+                                num_predict=args.num_predict,
+                                num_ctx=args.num_ctx,
+                                log=llm_log,
+                                label=f"json_repair:{batch_key}",
+                            )
+                            if not updated:
+                                raw_path = steps_out / _step_name(profile_raw_tmpl, batch_key)
+                                raw_path.write_text(raw, encoding="utf-8")
+                                _repo_log("[WARN] Could not parse update JSON; raw saved.", stderr=True)
+                                profile_check_msg = "skipped (update parse failed)"
+                                coverage["parse_failed"] = True
+                            else:
+                                prev_profile = deepcopy(profile) if isinstance(profile, dict) else {}
+                                profile, merge_info = _merge_profile_additive(prev_profile, updated)
+                                _normalize_profile(profile, repo_name, repo_path)
+                                profile = normalize_profile(
+                                    profile,
+                                    repo_name=repo_name,
+                                    repo_path=str(repo_path),
+                                    routes_entries=routes_entries or None,
+                                )
+                                added_msg = _format_counts(merge_info.get("added", {})) if merge_info else "none"
+                                kept_msg = _format_counts(merge_info.get("kept", {})) if merge_info else "none"
+                                profile_check_msg = f"added={added_msg} preserved={kept_msg}"
+
+                        if profile is not None:
+                            batch_snap_path = steps_out / _step_name(profile_snap_tmpl, batch_key)
+                            batch_snap_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                        if profile_check_msg:
+                            batch_messages.append(f"batch={batch_idx} {profile_check_msg}")
+
+                        evidence_index_lines.append(
+                            f"BATCH_{batch_idx}: {batch_key} files={len(batch_files)} evidence={evidence_path.name}"
+                        )
+                        sources_index_lines.append(
+                            f"BATCH_{batch_idx}: {batch_key} files={len(batch_files)} sources={sources_path.name}"
+                        )
+
+                    evidence_index_path = steps_out / _step_name(evidence_tmpl, step.key)
+                    evidence_index_path.write_text("\n".join(evidence_index_lines), encoding="utf-8")
+                    sources_index_path = steps_out / _step_name(sources_tmpl, step.key)
+                    sources_index_path.write_text("\n".join(sources_index_lines), encoding="utf-8")
+
+                    if not step_aborted and profile is not None:
+                        snap_path = steps_out / _step_name(profile_snap_tmpl, step.key)
+                        snap_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                    step_elapsed = time.perf_counter() - step_started
+                    step_durations[step.key] = step_elapsed
+                    coverage_by_step[step.key] = coverage
+                    _repo_log(f"[TIME] step={step.key} duration={_format_duration(step_elapsed)}")
+                    if batch_messages:
+                        _repo_log(f"[PROFILE] {step.key} batches={len(batch_messages)} last={batch_messages[-1]}")
+                    if step_aborted:
+                        break
+                    continue
+
                 if profile is None:
                     system_prompt = PROFILE_INIT_SYSTEM
                     user_prefix = (
@@ -581,6 +950,13 @@ def main() -> int:
                 )
                 if routes_blob:
                     evidence = evidence + routes_blob
+                coverage_by_step[step.key] = {
+                    "files_total": len(step_files),
+                    "bytes_total": total_bytes,
+                    "batches": 1,
+                    "evidence_limited": "[STEP_EVIDENCE_LIMIT_REACHED]" in evidence,
+                    "parse_failed": False,
+                }
 
                 sources = build_step_sources(
                     repo_path,
@@ -625,6 +1001,7 @@ def main() -> int:
                         raw_path.write_text(raw, encoding="utf-8")
                         _repo_log("[WARN] Could not parse init JSON; raw saved.", stderr=True)
                         profile_check_msg = "skipped (init parse failed)"
+                        coverage_by_step[step.key]["parse_failed"] = True
                         step_elapsed = time.perf_counter() - step_started
                         step_durations[step.key] = step_elapsed
                         _repo_log(f"[TIME] step={step.key} duration={_format_duration(step_elapsed)}")
@@ -675,6 +1052,7 @@ def main() -> int:
                         raw_path.write_text(raw, encoding="utf-8")
                         _repo_log("[WARN] Could not parse update JSON; raw saved.", stderr=True)
                         profile_check_msg = "skipped (update parse failed)"
+                        coverage_by_step[step.key]["parse_failed"] = True
                     else:
                         prev_profile = deepcopy(profile) if isinstance(profile, dict) else {}
                         profile, merge_info = _merge_profile_additive(prev_profile, updated)
@@ -709,7 +1087,39 @@ def main() -> int:
                 )
                 continue
 
+            # Heuristic enrichment for config-derived datastores and dependencies.
+            hint_files: List[Path] = []
+            for key in ("01_docs_infra", "05_deps_datastores", "06_configs"):
+                hint_files.extend(selected_step_files.get(key, []))
+            datastores_hint, deps_hint = infer_hints(
+                repo_path,
+                hint_files,
+                max_file_bytes=min(args.max_file_bytes, 200_000),
+                log=_repo_log if args.verbose else None,
+            )
+            profile = enrich_profile(profile, datastores=datastores_hint, dependencies=deps_hint)
+            profile = normalize_profile(
+                profile,
+                repo_name=repo_name,
+                repo_path=str(repo_path),
+                routes_entries=routes_entries or None,
+            )
+
             final_profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+
+            coverage_path = repo_out / "coverage.json"
+            coverage_path.write_text(
+                json.dumps(
+                    {
+                        "repo": {"name": repo_name, "path": str(repo_path)},
+                        "analysis_mode": args.analysis_mode,
+                        "steps": coverage_by_step,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
         if profile is None:
             _repo_log("[ERROR] No profile available for rendering.", stderr=True)
@@ -816,5 +1226,13 @@ def main() -> int:
                 _log(f"[OK] wrote {aggregate_path}")
         except Exception as e:
             _log(f"[WARN] Failed to build aggregate workspace: {e}", stderr=True)
+
+    try:
+        overview_path = out_root / "README.md"
+        count = build_overview(out_root, overview_path)
+        if count:
+            _log(f"[OK] wrote {overview_path}")
+    except Exception as e:
+        _log(f"[WARN] Failed to build overview index: {e}", stderr=True)
 
     return 0

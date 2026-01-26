@@ -11,6 +11,7 @@ from .repo_scan import (
     IGNORE_DIRS,
     IGNORE_EXTS,
     TEXT_EXT_ALLOWLIST,
+    is_generated_file,
     is_probably_binary,
     is_special_text_filename,
     read_file_head_tail,
@@ -81,6 +82,35 @@ def _sanitize_path_for_mermaid(path: str) -> str:
     if not path:
         return path
     return re.sub(r"\{([^}]+)\}", r":\1", path)
+
+
+def _normalize_path(path: str) -> str:
+    path = path.strip()
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        return "/" + path
+    return path
+
+
+def _base_path(path: str) -> str:
+    path = _normalize_path(path)
+    if not path or path == "/":
+        return ""
+    parts = [p for p in path.strip("/").split("/") if p]
+    if not parts:
+        return ""
+    base_len = 1
+    if parts[0] in {"api", "internal", "public"}:
+        if len(parts) >= 3 and re.match(r"v\d+", parts[2], re.IGNORECASE):
+            base_len = 3
+        elif len(parts) >= 2:
+            base_len = 2
+        if len(parts) >= 3 and re.match(r"v\d+", parts[1], re.IGNORECASE):
+            base_len = 3
+    elif len(parts) >= 2 and re.match(r"v\d+", parts[1], re.IGNORECASE):
+        base_len = 2
+    return "/" + "/".join(parts[:base_len])
 
 
 def _java_class_name(text: str) -> str:
@@ -354,6 +384,8 @@ def _is_text_candidate(p: Path) -> bool:
     ext = p.suffix.lower()
     if ext in IGNORE_EXTS:
         return False
+    if is_generated_file(p.as_posix()):
+        return False
     if is_probably_binary(p):
         return False
     if ext in TEXT_EXT_ALLOWLIST:
@@ -482,6 +514,20 @@ def format_routes_text(
 ) -> str:
     """Render routes into a compact text block for prompts."""
     lines = ["ROUTES_PROFILE (method path | file | handler):", "-----"]
+    base_counts: dict[str, int] = {}
+    for r in routes:
+        path = str(r.get("path") or "").strip()
+        base = _base_path(path)
+        if not base:
+            continue
+        base_counts[base] = base_counts.get(base, 0) + 1
+    if base_counts:
+        items = sorted(base_counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+        summary = ", ".join([f"{base} ({count})" for base, count in items[:8]])
+        if len(items) > 8:
+            summary += f", +{len(items) - 8} more"
+        lines.append(f"SUMMARY: {summary}")
+        lines.append("-----")
     for r in routes[:limit]:
         method = r.get("method") or "ANY"
         path = r.get("path") or "<unknown>"

@@ -59,8 +59,18 @@ _EXTERNAL_HINT_RE = re.compile(
     r"elasticsearch|opensearch|mongo|mysql|postgres|oracle|sqlserver)\b",
     re.IGNORECASE,
 )
+_HOST_LIKE_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+\.(com|net|org|io|co|dev|internal|local|svc|cluster|cloud|corp|prod|staging|test)$",
+    re.IGNORECASE,
+)
 _API_DETAILS_SIGNAL_RE = re.compile(
     r"\b(GET|POST|PUT|PATCH|DELETE)\b\s*/|/api/|/v\d+/|\\bgrpc\\b|openapi|swagger|asyncapi|\\.proto",
+    re.IGNORECASE,
+)
+
+_OPEN_QUESTION_FIELD_RE = re.compile(r"question['\"]?\s*:\s*['\"]([^'\"]+)['\"]", re.IGNORECASE)
+_OPEN_QUESTION_DROP_RE = re.compile(
+    r"provided text does not contain|schema does not include|no specific repository",
     re.IGNORECASE,
 )
 
@@ -70,6 +80,10 @@ def _is_library_target(target: str) -> bool:
     if not target:
         return True
     if "//" in target:
+        return False
+    if ":" in target and _HOST_LIKE_RE.search(target.split(":", 1)[0]):
+        return False
+    if _HOST_LIKE_RE.search(target):
         return False
     if "/" in target:
         return True
@@ -169,6 +183,77 @@ def _routes_to_details(routes: List[dict], *, limit: int = 20) -> str:
     return ", ".join(items)
 
 
+def _normalize_path(path: str) -> str:
+    path = path.strip()
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        return "/" + path
+    return path
+
+
+def _base_path(path: str) -> str:
+    path = _normalize_path(path)
+    if not path or path == "/":
+        return ""
+    parts = [p for p in path.strip("/").split("/") if p]
+    if not parts:
+        return ""
+    base_len = 1
+    if parts[0] in {"api", "internal", "public"}:
+        if len(parts) >= 3 and re.match(r"v\d+", parts[2], re.IGNORECASE):
+            base_len = 3
+        elif len(parts) >= 2:
+            base_len = 2
+        if len(parts) >= 3 and re.match(r"v\d+", parts[1], re.IGNORECASE):
+            base_len = 3
+    elif len(parts) >= 2 and re.match(r"v\d+", parts[1], re.IGNORECASE):
+        base_len = 2
+    return "/" + "/".join(parts[:base_len])
+
+
+def _routes_to_summary(routes: List[dict], *, limit: int = 6) -> str:
+    counts: dict[str, int] = {}
+    for r in routes:
+        method = str(r.get("method") or "").upper()
+        if method and method not in _HTTP_METHODS and method != "GRPC":
+            continue
+        path = str(r.get("path") or "").strip()
+        base = _base_path(path)
+        if not base:
+            continue
+        counts[base] = counts.get(base, 0) + 1
+    if not counts:
+        return ""
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    parts = [f"{base} ({count})" for base, count in items[:limit]]
+    if len(items) > limit:
+        parts.append(f"+{len(items) - limit} more")
+    return ", ".join(parts)
+
+
+def _grpc_services_summary(routes: List[dict], *, limit: int = 6) -> str:
+    services: dict[str, int] = {}
+    for r in routes:
+        method = str(r.get("method") or "").upper()
+        if method != "GRPC":
+            continue
+        handler = str(r.get("handler") or "").strip()
+        if not handler:
+            continue
+        service = handler.split("/", 1)[0]
+        if not service:
+            continue
+        services[service] = services.get(service, 0) + 1
+    if not services:
+        return ""
+    items = sorted(services.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    parts = [f"{svc} ({count})" for svc, count in items[:limit]]
+    if len(items) > limit:
+        parts.append(f"+{len(items) - limit} more")
+    return ", ".join(parts)
+
+
 def _details_look_like_paths(details: str) -> bool:
     if not details:
         return False
@@ -179,6 +264,17 @@ def _api_details_actionable(details: str) -> bool:
     if not details:
         return False
     return bool(_API_DETAILS_SIGNAL_RE.search(details))
+
+
+def _clean_open_question(q: str) -> Optional[str]:
+    if not q:
+        return None
+    if _OPEN_QUESTION_DROP_RE.search(q):
+        return None
+    m = _OPEN_QUESTION_FIELD_RE.search(q)
+    if m:
+        return m.group(1).strip()
+    return q.strip()
 
 
 def normalize_profile(
@@ -225,6 +321,9 @@ def normalize_profile(
                 apis_out.append({"type": "unknown", "details": a.strip()})
     if routes_entries:
         http_details = _routes_to_details(routes_entries)
+        http_summary = _routes_to_summary(routes_entries)
+        if http_summary:
+            http_details = f"Routes grouped by base path: {http_summary}. Examples: {http_details}" if http_details else f"Routes grouped by base path: {http_summary}."
         if http_details:
             found_http = False
             for api in apis_out:
@@ -233,12 +332,29 @@ def normalize_profile(
                     found_http = True
             if not found_http:
                 apis_out.append({"type": "http", "details": http_details})
+        grpc_summary = _grpc_services_summary(routes_entries)
+        if grpc_summary:
+            found_grpc = False
+            for api in apis_out:
+                if "grpc" in api.get("type", "").lower():
+                    api["details"] = f"Services: {grpc_summary}"
+                    found_grpc = True
+            if not found_grpc:
+                apis_out.append({"type": "grpc", "details": f"Services: {grpc_summary}"})
     for api in apis_out:
         details = api.get("details", "")
         if _details_look_like_paths(details) and not routes_entries:
             api["details"] = "unknown (routes not detected)"
         elif not routes_entries and not _api_details_actionable(details):
             api["details"] = "unknown (routes not detected)"
+    apis_out = [
+        a
+        for a in apis_out
+        if not (
+            str(a.get("type", "")).strip().lower() == "unknown"
+            and not str(a.get("details", "")).strip()
+        )
+    ]
     profile["apis"] = apis_out
 
     # Normalize data stores
@@ -255,6 +371,11 @@ def normalize_profile(
                 )
             elif isinstance(s, str) and s.strip():
                 stores_out.append({"type": s.strip(), "details": ""})
+    stores_out = [
+        s
+        for s in stores_out
+        if not (str(s.get("type", "")).strip().lower() == "unknown" and not str(s.get("details", "")).strip())
+    ]
     profile["data_stores"] = stores_out
 
     # Normalize containers
@@ -284,6 +405,18 @@ def normalize_profile(
                         "depends_on": [],
                     }
                 )
+    containers_out = [
+        c
+        for c in containers_out
+        if not (
+            str(c.get("name", "")).strip().lower() == "unknown"
+            and str(c.get("type", "")).strip().lower() == "unknown"
+            and str(c.get("tech", "")).strip().lower() == "unknown"
+            and str(c.get("responsibility", "")).strip().lower() == "unknown"
+            and not c.get("exposes")
+            and not c.get("depends_on")
+        )
+    ]
     profile["containers"] = containers_out
 
     # Normalize outbound dependencies
@@ -322,7 +455,12 @@ def normalize_profile(
     profile["dependencies_outbound"] = deps_out
 
     # Normalize open questions
-    oq = _normalize_list(profile.get("open_questions", []))
-    profile["open_questions"] = list(dict.fromkeys(oq))
+    oq_raw = _normalize_list(profile.get("open_questions", []))
+    oq_clean: List[str] = []
+    for item in oq_raw:
+        cleaned = _clean_open_question(item)
+        if cleaned:
+            oq_clean.append(cleaned)
+    profile["open_questions"] = list(dict.fromkeys(oq_clean))
 
     return profile

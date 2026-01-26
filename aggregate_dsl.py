@@ -89,6 +89,14 @@ class SystemNode:
     desc: str
 
 
+@dataclass
+class ExternalNode:
+    """Represents an external system in the merged DSL."""
+    var: str
+    label: str
+    desc: str
+
+
 def slugify(text: str) -> str:
     """Convert a label into a DSL-safe identifier."""
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", text).strip("_").lower()
@@ -97,6 +105,11 @@ def slugify(text: str) -> str:
     if slug[0].isdigit():
         slug = "_" + slug
     return slug
+
+
+def normalize_label(text: str) -> str:
+    """Normalize labels for matching dependencies to systems."""
+    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
 
 
 def unique_var(base: str, used: Set[str]) -> str:
@@ -214,6 +227,8 @@ def build_full_workspace(out_root: Path, out_path: Path) -> int:
     # Gather systems and inferred shared infra across all repo outputs.
     systems: List[SystemNode] = []
     repo_infra: Dict[str, Set[str]] = {}
+    repo_profiles: Dict[str, dict] = {}
+    system_lookup: Dict[str, str] = {}
     infra_meta: Dict[str, Tuple[str, Optional[str]]] = {}
 
     used_vars: Set[str] = set()
@@ -238,6 +253,9 @@ def build_full_workspace(out_root: Path, out_path: Path) -> int:
 
         sys_var = unique_var(f"sys_{slugify(repo_dir.name)}", used_vars)
         systems.append(SystemNode(var=sys_var, label=label, desc=system_desc(profile)))
+        repo_profiles[sys_var] = profile
+        system_lookup[normalize_label(label)] = sys_var
+        system_lookup[normalize_label(repo_dir.name)] = sys_var
 
         texts = collect_texts(profile, dsl_text)
         infra_refs = extract_infra_refs(texts)
@@ -259,12 +277,39 @@ def build_full_workspace(out_root: Path, out_path: Path) -> int:
         var = unique_var(f"infra_{slugify(label)}", used_vars)
         infra_nodes[key] = InfraNode(kind=kind, host=host, var=var, label=label, desc=desc)
 
+    external_nodes: Dict[str, ExternalNode] = {}
+    relationships: List[Tuple[str, str, str]] = []
+
+    for sys_var, profile in repo_profiles.items():
+        deps = profile.get("dependencies_outbound") if isinstance(profile.get("dependencies_outbound"), list) else []
+        for d in deps:
+            if isinstance(d, dict):
+                target = str(d.get("target") or "").strip()
+            else:
+                target = str(d or "").strip()
+            if not target or target.lower() == "unknown":
+                continue
+            if detect_infra_kinds(target):
+                continue
+            match_key = normalize_label(target)
+            if match_key in system_lookup:
+                relationships.append((sys_var, system_lookup[match_key], "Calls"))
+                continue
+            ext_key = target.lower()
+            if ext_key not in external_nodes:
+                ext_var = unique_var(f"ext_{slugify(target)}", used_vars)
+                external_nodes[ext_key] = ExternalNode(var=ext_var, label=target, desc="External system")
+            relationships.append((sys_var, external_nodes[ext_key].var, "Calls"))
+
     lines: List[str] = []
     lines.append("workspace {")
     lines.append("  model {")
 
     for system in systems:
         lines.append(f'    {system.var} = softwareSystem("{system.label}", "{system.desc}")')
+
+    for node in external_nodes.values():
+        lines.append(f'    {node.var} = softwareSystem("{node.label}", "{node.desc}")')
 
     for node in infra_nodes.values():
         lines.append(f'    {node.var} = dataStore("{node.label}", "{node.desc}")')
@@ -275,6 +320,9 @@ def build_full_workspace(out_root: Path, out_path: Path) -> int:
             if not infra_node:
                 continue
             lines.append(f'    relationship({system.var}, {infra_node.var}, "Uses")')
+
+    for src, dst, label in relationships:
+        lines.append(f'    relationship({src}, {dst}, "{label}")')
 
     lines.append("  }")
     lines.append("")
