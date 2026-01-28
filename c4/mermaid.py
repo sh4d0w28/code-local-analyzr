@@ -356,20 +356,22 @@ def _normalize_c4_container(
 
     ext_map: dict[str, str] = {}
 
-    def _iter_outbound(entries: List[object]) -> Iterable[tuple[str, str]]:
+    def _iter_outbound(entries: List[object]) -> Iterable[tuple[str, str, str]]:
         for dep in entries:
             if isinstance(dep, dict):
                 target = str(dep.get("target") or "").strip()
                 reason = str(dep.get("reason") or "").strip()
+                name = str(dep.get("name") or "").strip()
             elif isinstance(dep, str):
                 target = dep.strip()
                 reason = ""
+                name = ""
             else:
                 continue
             if target:
-                yield target, reason
+                yield target, reason, name
 
-    for target, reason in _iter_outbound(outbound_deps):
+    for target, reason, name in _iter_outbound(outbound_deps):
         if not target:
             continue
         target_norm = target.lower()
@@ -380,12 +382,16 @@ def _normalize_c4_container(
             continue
         ext_id = _slugify_id(target)
         if ext_id in ext_ids:
-            ext_map[target.lower()] = ext_id
+            ext_map[(name.lower() or target.lower())] = ext_id
             continue
-        reason = reason or "External system"
-        external_lines.append(f'System_Ext({ext_id}, "{_escape_label(target)}", "{_escape_label(reason)}")')
+        label = name or target
+        if name and target:
+            reason = reason or f"Target: {target}"
+        else:
+            reason = reason or "External system"
+        external_lines.append(f'System_Ext({ext_id}, "{_escape_label(label)}", "{_escape_label(reason)}")')
         ext_ids.add(ext_id)
-        ext_map[target.lower()] = ext_id
+        ext_map[(name.lower() or target.lower())] = ext_id
 
     used_ids = set(container_ids) | ext_ids | {system_id}
     store_lines: List[str] = []

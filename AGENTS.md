@@ -15,6 +15,15 @@ Purpose: keep a lightweight, append-only record of changes and progress in this 
 - (fill in)
 
 ## Recent changes (newest first)
+- 2026-01-28 00:00 - Improve outbound dependency hints and include entrypoints in heuristics
+  - Files: c4/heuristics.py, c4/runner.py
+  - Notes: treat .env as config, parse endpoint keys with localhost handling, add code-based grpc/pgx hints
+- 2026-01-26 11:55 - Add dependency system names to C4/Mermaid outputs
+  - Files: c4/heuristics.py, c4/profile_normalize.py, c4/mermaid.py, c4/dsl_render.py
+  - Notes: derive system name from config keys and show as external labels with target in description
+- 2026-01-26 11:40 - Added config key context to dependency hints
+  - Files: c4/heuristics.py
+  - Notes: dependency evidence now includes config key names when available
 - 2026-01-26 11:25 - Improved unknown details and deduped datastores; postprocessed auth outputs
   - Files: c4/profile_normalize.py, architecture-out/repos/auth/repo-profile.json, architecture-out/repos/auth/ARCHITECTURE.md
   - Notes: clearer unknown reasons, datastore dedupe by evidence path, cleaned dependencies in auth profile

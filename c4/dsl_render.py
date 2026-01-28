@@ -290,9 +290,11 @@ def render_structurizr(profile: dict) -> str:
         if isinstance(dep, dict):
             target = str(dep.get("target") or "").strip()
             reason = _escape(str(dep.get("reason") or "").strip())
+            name = str(dep.get("name") or "").strip()
         elif isinstance(dep, str):
             target = dep.strip()
             reason = ""
+            name = ""
         else:
             continue
         if not target:
@@ -308,13 +310,13 @@ def render_structurizr(profile: dict) -> str:
         if base == system_id or base in used_ids:
             base = f"ext_{base}"
         eid = unique_id(base, used_ids)
-        external_defs.append(
-            {
-                "id": eid,
-                "label": _escape(target),
-                "desc": reason,
-            }
-        )
+        label = _escape(name or target)
+        desc = reason
+        if name and target:
+            desc = f"Target: {target}" + (f"; {reason}" if reason else "")
+        if desc:
+            desc = _escape(desc)
+        external_defs.append({"id": eid, "label": label, "desc": desc})
         external_ids_by_slug[slugify(target)] = eid
         external_ids_by_slug[slugify(eid)] = eid
 

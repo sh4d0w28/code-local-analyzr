@@ -1097,7 +1097,7 @@ def main() -> int:
 
             # Heuristic enrichment for config-derived datastores and dependencies.
             hint_files: List[Path] = []
-            for key in ("01_docs_infra", "05_deps_datastores", "06_configs"):
+            for key in ("01_docs_infra", "03_entrypoints", "05_deps_datastores", "06_configs"):
                 hint_files.extend(selected_step_files.get(key, []))
             datastores_hint, deps_hint = infer_hints(
                 repo_path,

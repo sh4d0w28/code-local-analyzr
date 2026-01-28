@@ -589,9 +589,11 @@ def normalize_profile(
             if isinstance(d, dict):
                 target = str(d.get("target") or d.get("name") or "").strip()
                 reason = str(d.get("reason") or "").strip()
+                name = str(d.get("name") or "").strip()
             elif isinstance(d, str):
                 target = d.strip()
                 reason = ""
+                name = ""
             else:
                 continue
             if not target:
@@ -614,7 +616,10 @@ def normalize_profile(
             if target_l in seen:
                 continue
             seen.add(target_l)
-            deps_out.append({"target": target, "reason": reason})
+            dep_entry = {"target": target, "reason": reason}
+            if name:
+                dep_entry["name"] = name
+            deps_out.append(dep_entry)
     profile["dependencies_outbound"] = deps_out
 
     # Normalize open questions
